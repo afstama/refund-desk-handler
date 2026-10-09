@@ -1,0 +1,135 @@
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { classify } from "../src/events.js";
+
+const at = "2026-04-14T09:12:44+02:00";
+const refund = (payload: Record<string, unknown>) => ({ id: "evt_x", type: "refund.requested", occurred_at: at, payload });
+const goodRefund = { refund_id: "R-0311", order_id: "O-1042", amount: "9.99", currency: "EUR", reason: "damaged" };
+
+function detail(body: unknown): string {
+  const result = classify(body);
+  assert.equal(result.ok, false, "expected the event to be refused");
+  return result.ok ? "" : result.detail;
+}
+
+describe("classify: usable events", () => {
+  test("order.created", () => {
+    const result = classify({ id: "evt_1", type: "order.created", occurred_at: at, payload: { order_id: "O-1042", customer_email: " a@example.com ", total: "29.97", currency: "EUR", extra: "ignored" } });
+    assert.deepEqual(result, {
+      ok: true,
+      event: { kind: "order.created", occurredAt: new Date("2026-04-14T07:12:44.000Z"), orderId: "O-1042", customerEmail: "a@example.com", currency: "EUR", totalMinor: 2997 },
+    });
+  });
+
+  test("dirty but unambiguous values are normalised: spaces, reason case, number amount", () => {
+    const r1 = classify(refund({ ...goodRefund, amount: " 18.40" })); // evt_0389
+    const r2 = classify(refund({ ...goodRefund, reason: "DAMAGED" })); // evt_0196
+    const r3 = classify(refund({ ...goodRefund, order_id: "  O-1112 " })); // evt_0379
+    const r4 = classify(refund({ ...goodRefund, amount: 11.4 })); // evt_0357
+    assert.ok(r1.ok && r1.event.kind === "refund.requested" && r1.event.amountMinor === 1840);
+    assert.ok(r2.ok && r2.event.kind === "refund.requested" && r2.event.reason === "damaged");
+    assert.ok(r3.ok && r3.event.kind === "refund.requested" && r3.event.orderId === "O-1112");
+    assert.ok(r4.ok && r4.event.kind === "refund.requested" && r4.event.amountMinor === 1140);
+  });
+
+  test("ids keep their case: o-1112 is not O-1112", () => {
+    const r = classify(refund({ ...goodRefund, order_id: "o-1112" }));
+    assert.ok(r.ok && r.event.kind === "refund.requested" && r.event.orderId === "o-1112");
+  });
+
+  test("more than two decimals are rounded half up", () => {
+    const r = classify(refund({ ...goodRefund, amount: "10.999" }));
+    assert.ok(r.ok && r.event.kind === "refund.requested" && r.event.amountMinor === 1100);
+  });
+
+  test("shipment.delivered and order.cancelled", () => {
+    const d = classify({ id: "e", type: "shipment.delivered", occurred_at: at, payload: { order_id: "O-1" } });
+    const c = classify({ id: "e", type: "order.cancelled", occurred_at: at, payload: { order_id: "O-1" } });
+    assert.ok(d.ok && d.event.kind === "shipment.delivered");
+    assert.ok(c.ok && c.event.kind === "order.cancelled");
+  });
+
+  test("message.received: order_id may be null or missing, text is kept as sent", () => {
+    const base = { message_id: "M-0207", channel: "email", text: "  hello  " };
+    const withNull = classify({ id: "e", type: "message.received", occurred_at: at, payload: { ...base, order_id: null } });
+    const without = classify({ id: "e", type: "message.received", occurred_at: at, payload: base });
+    const named = classify({ id: "e", type: "message.received", occurred_at: at, payload: { ...base, order_id: "O-1042" } });
+    for (const r of [withNull, without]) assert.ok(r.ok && r.event.kind === "message.received" && r.event.orderId === null && r.event.text === "  hello  ");
+    assert.ok(named.ok && named.event.kind === "message.received" && named.event.orderId === "O-1042");
+  });
+
+  test("an unknown but well-formed type is acknowledged, whatever its payload (evt_0114)", () => {
+    const r = classify({ id: "evt_0114", type: "loyalty.points_awarded", occurred_at: at, payload: { anything: [1, 2] } });
+    assert.deepEqual(r, { ok: true, event: { kind: "unknown", occurredAt: new Date("2026-04-14T07:12:44.000Z"), type: "loyalty.points_awarded" } });
+  });
+
+  test("types named after Object.prototype members are just unknown types", () => {
+    for (const type of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      const r = classify({ id: "e", type, occurred_at: at, payload: {} });
+      assert.ok(r.ok && r.event.kind === "unknown" && r.event.type === type, type);
+    }
+  });
+});
+
+describe("classify: events that are refused (detail names the field, never the value)", () => {
+  test("not an event object: evt_0175 null, evt_0195 a list", () => {
+    assert.equal(detail(null), "body is not a JSON object");
+    assert.equal(detail([1, 2, 3]), "body is not a JSON object");
+    assert.equal(detail("text"), "body is not a JSON object");
+    assert.equal(detail(42), "body is not a JSON object");
+  });
+
+  test("type is not a string: evt_0135", () => {
+    assert.equal(detail({ id: "evt_0135", type: 42, occurred_at: at, payload: {} }), "event: type invalid");
+    assert.equal(detail({ id: "e", occurred_at: at, payload: {} }), "event: type missing");
+    assert.equal(detail({ id: "e", type: "", occurred_at: at, payload: {} }), "event: type invalid");
+  });
+
+  test("bad timestamp: evt_0100", () => {
+    assert.equal(detail({ id: "evt_0100", type: "shipment.delivered", occurred_at: "not-a-date", payload: { order_id: "O-1120" } }), "shipment.delivered: occurred_at invalid");
+    assert.equal(detail({ id: "e", type: "shipment.delivered", payload: { order_id: "O-1" } }), "shipment.delivered: occurred_at missing");
+    assert.equal(detail({ id: "e", type: "loyalty.points_awarded", occurred_at: "nope", payload: {} }), "event: occurred_at invalid");
+  });
+
+  test("payload missing or not an object: evt_0073, evt_0126", () => {
+    assert.equal(detail({ id: "evt_0073", type: "refund.requested", occurred_at: at }), "refund.requested: payload missing");
+    assert.equal(detail({ id: "evt_0126", type: "order.created", occurred_at: at, payload: null }), "order.created: payload null");
+    assert.equal(detail({ id: "e", type: "order.created", occurred_at: at, payload: [] }), "order.created: payload invalid");
+  });
+
+  test("required fields missing: evt_0148, evt_0061, evt_0360", () => {
+    assert.equal(detail({ id: "evt_0148", type: "order.created", occurred_at: at, payload: { customer_email: "x@example.com", total: "19.00", currency: "EUR" } }), "order.created: payload.order_id missing");
+    const { refund_id: _a, ...noRefundId } = goodRefund;
+    assert.equal(detail(refund(noRefundId)), "refund.requested: payload.refund_id missing");
+    const { currency: _b, ...noCurrency } = goodRefund;
+    assert.equal(detail(refund(noCurrency)), "refund.requested: payload.currency missing");
+  });
+
+  test("amounts that cannot be read: evt_0124, evt_0212, evt_0350", () => {
+    for (const bad of ["13,40", "abc", "-15.00"]) {
+      const d = detail(refund({ ...goodRefund, amount: bad }));
+      assert.equal(d, "refund.requested: payload.amount invalid");
+      assert.ok(!d.includes(bad));
+    }
+    assert.equal(detail(refund({ ...goodRefund, amount: null })), "refund.requested: payload.amount null");
+    assert.equal(detail(refund({ ...goodRefund, amount: "0.00" })), "refund.requested: payload.amount invalid");
+  });
+
+  test("currency must be three capital letters, ids must not be blank", () => {
+    assert.equal(detail(refund({ ...goodRefund, currency: "eur" })), "refund.requested: payload.currency invalid");
+    assert.equal(detail(refund({ ...goodRefund, currency: "EURO" })), "refund.requested: payload.currency invalid");
+    assert.equal(detail(refund({ ...goodRefund, order_id: "   " })), "refund.requested: payload.order_id invalid");
+  });
+
+  test("a NUL character would break the insert, so the event is refused", () => {
+    const body = { id: "e", type: "message.received", occurred_at: at, payload: { message_id: "M-1", order_id: null, channel: "email", text: "hi\u0000there" } };
+    assert.equal(detail(body), "message.received: text contains a NUL character");
+  });
+
+  test("never throws on odd input", () => {
+    const deep = JSON.parse("[".repeat(5000) + "]".repeat(5000));
+    for (const body of [deep, { type: {}, occurred_at: [] }, Object.create(null), { type: "order.created", occurred_at: at, payload: { order_id: { toString: 1 } } }]) {
+      assert.doesNotThrow(() => classify(body));
+    }
+  });
+});

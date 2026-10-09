@@ -1,7 +1,9 @@
 import Fastify from "fastify";
+import { applyEvent } from "./apply.js";
 import { getPool } from "./db.js";
+import { webhookRoutes, type WebhookDeps } from "./webhooks.js";
 
-export function buildApp(opts: { logger?: boolean } = {}) {
+export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"] } = {}) {
   const app = Fastify({ logger: opts.logger ?? false });
 
   app.get("/health", async (_req, reply) => {
@@ -13,6 +15,8 @@ export function buildApp(opts: { logger?: boolean } = {}) {
       return reply.code(503).send({ ok: false, db: false });
     }
   });
+
+  app.register(webhookRoutes({ apply: opts.apply ?? applyEvent }));
 
   return app;
 }
