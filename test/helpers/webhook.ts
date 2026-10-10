@@ -11,6 +11,8 @@ export interface DeliverOptions {
   /** undefined: sign the body correctly. null: send no signature header. A string: send exactly that. */
   signature?: string | null;
   contentType?: string;
+  /** Path to post to. Default "/webhooks". */
+  url?: string;
 }
 
 /** One POST /webhooks. `eventId` undefined means no X-Event-Id header. */
@@ -19,7 +21,7 @@ export async function deliver(app: FastifyInstance, eventId: string | undefined,
   if (eventId !== undefined) headers["x-event-id"] = eventId;
   const signature = opts.signature === undefined ? sign(body) : opts.signature;
   if (signature !== null) headers["x-signature"] = signature;
-  const res = await app.inject({ method: "POST", url: "/webhooks", headers, payload: body });
+  const res = await app.inject({ method: "POST", url: opts.url ?? "/webhooks", headers, payload: body });
   return { status: res.statusCode, json: res.json() as Record<string, unknown> };
 }
 

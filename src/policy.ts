@@ -26,7 +26,8 @@ export interface OrderState {
   /** Approved refunds so far (automatic and human). Queued and rejected ones do not count. */
   refundedMinor: number;
   deliveredAt: Date | null;
-  cancelled: boolean;
+  /** When the cancellation happened (its own timestamp), or null. It only counts for a refund made at or after it. */
+  cancelledAt: Date | null;
 }
 
 export interface PolicyDecision {
@@ -68,12 +69,16 @@ const forHuman = (reasonCode: ReasonCode, note: string | null = null): PolicyDec
  * - A refund in another currency than its order, or in a currency without a rate, goes to a human. The code
  *   OVER_THRESHOLD plus a note is provisional until Marko answers. The balance cannot be compared across
  *   currencies, so that check is skipped for a mismatch. A cancelled order is still rejected.
- * - "Delivered" means delivered at or before the refund's own timestamp.
+ * - "Delivered" means delivered at or before the refund's own timestamp. "Cancelled" is the same: an order counts
+ *   as cancelled for a refund only if it was cancelled at or before the refund's own timestamp. So one history of
+ *   events gives one decision, whether order.created arrived on time or last (a parked refund is decided later,
+ *   when more of the order's events are known).
  */
 export function decideRefund(refund: RefundInput, order: OrderState | null): PolicyDecision {
   if (order === null) return { decision: "parked", reasonCode: "ORDER_UNKNOWN", decidedBy: "none", note: null };
 
-  if (order.cancelled) return decided("rejected", "ORDER_CANCELLED");
+  const cancelled = order.cancelledAt !== null && order.cancelledAt.getTime() <= refund.occurredAt.getTime();
+  if (cancelled) return decided("rejected", "ORDER_CANCELLED");
 
   const sameCurrency = refund.currency === order.currency;
   if (!sameCurrency) return forHuman("OVER_THRESHOLD", "currency_mismatch");

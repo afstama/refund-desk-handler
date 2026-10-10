@@ -4,7 +4,8 @@ import { getPool } from "./db.js";
 import { webhookRoutes, type WebhookDeps } from "./webhooks.js";
 
 export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"] } = {}) {
-  const app = Fastify({ logger: opts.logger ?? false });
+  // POST /webhooks/ must work as well as POST /webhooks: a sender that adds a slash must not get a 404.
+  const app = Fastify({ logger: opts.logger ?? false, ignoreTrailingSlash: true });
 
   app.get("/health", async (_req, reply) => {
     try {

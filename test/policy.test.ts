@@ -10,7 +10,7 @@ const order = (o: Partial<OrderState> = {}): OrderState => ({
   totalMinor: 10_000,
   refundedMinor: 0,
   deliveredAt: DELIVERED,
-  cancelled: false,
+  cancelledAt: null,
   ...o,
 });
 const refund = (r: Partial<RefundInput> = {}): RefundInput => ({
@@ -56,8 +56,19 @@ describe("decideRefund: the order of the checks", () => {
   });
 
   test("a cancelled order is rejected before anything else, even a tiny eligible refund", () => {
-    assert.equal(outcome(refund(), order({ cancelled: true })), "rejected/ORDER_CANCELLED/policy");
-    assert.equal(outcome(refund({ amountMinor: 100_000 }), order({ cancelled: true })), "rejected/ORDER_CANCELLED/policy");
+    const cancelledAt = at("2026-04-12T10:00:00Z"); // before the default refund time, 2026-04-15
+    assert.equal(outcome(refund(), order({ cancelledAt })), "rejected/ORDER_CANCELLED/policy");
+    assert.equal(outcome(refund({ amountMinor: 100_000 }), order({ cancelledAt })), "rejected/ORDER_CANCELLED/policy");
+  });
+
+  test("a cancellation counts only for refunds made at or after it, on the timestamps (audit finding A)", () => {
+    const cancelledAt = at("2026-04-12T10:00:00Z");
+    const o = order({ cancelledAt });
+    assert.equal(outcome(refund({ occurredAt: at("2026-04-12T09:59:59Z") }), o), "auto_approved/AUTO_OK/policy"); // refund happened first
+    assert.equal(outcome(refund({ occurredAt: at("2026-04-12T10:00:00Z") }), o), "rejected/ORDER_CANCELLED/policy"); // same instant
+    assert.equal(outcome(refund({ occurredAt: at("2026-04-12T10:00:01Z") }), o), "rejected/ORDER_CANCELLED/policy");
+    // the same instant written with another offset
+    assert.equal(outcome(refund({ occurredAt: new Date("2026-04-12T11:59:59+02:00") }), o), "auto_approved/AUTO_OK/policy");
   });
 
   test("over the balance is rejected before auto-approve and before queueing", () => {
@@ -141,7 +152,7 @@ describe("decideRefund: money and currency", () => {
 
   test("a mismatch skips the balance check but a cancelled order is still rejected", () => {
     assert.equal(outcome(refund({ amountMinor: 999_999, currency: "EUR" }), usd({ totalMinor: 6500 })), "queued/OVER_THRESHOLD/none/currency_mismatch");
-    assert.equal(outcome(refund({ currency: "EUR" }), usd({ cancelled: true })), "rejected/ORDER_CANCELLED/policy");
+    assert.equal(outcome(refund({ currency: "EUR" }), usd({ cancelledAt: at("2026-04-12T10:00:00Z") })), "rejected/ORDER_CANCELLED/policy");
   });
 
   test("a currency without a rate goes to a human, even when order and refund agree", () => {

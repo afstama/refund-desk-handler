@@ -19,14 +19,17 @@ const eur = (minor: number, cur: string) => Math.floor((minor * PERCENT[cur]! + 
 
 const orders = new Map<string, { total: number; cur: string; refunded: number }>();
 const delivered = new Map<string, Date>();
-const cancelled = new Set<string>();
+const cancelled = new Map<string, Date>();
 const parked = new Map<string, Ref[]>();
 const out: Record<string, Dec> = {};
 const seen = new Set<string>();
 
 function decide(r: Ref): Omit<Dec, "order_id"> {
   const o = orders.get(r.order)!;
-  if (cancelled.has(r.order)) return { decision: "rejected", reason_code: "ORDER_CANCELLED", decided_by: "policy", note: null };
+  const cancelledAt = cancelled.get(r.order);
+  if (cancelledAt !== undefined && cancelledAt.getTime() <= r.at.getTime()) {
+    return { decision: "rejected", reason_code: "ORDER_CANCELLED", decided_by: "policy", note: null };
+  }
   if (r.cur !== o.cur) return { decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", note: "currency_mismatch" };
   if (r.minor > o.total - o.refunded) return { decision: "rejected", reason_code: "EXCEEDS_BALANCE", decided_by: "policy", note: null };
   if (!(r.cur in PERCENT)) return { decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", note: "unsupported_currency" };
@@ -62,7 +65,7 @@ for (const line of fs.readFileSync(new URL("../events.ndjson", import.meta.url),
   } else if (e.kind === "shipment.delivered") {
     if (!delivered.has(e.orderId)) delivered.set(e.orderId, e.occurredAt);
   } else if (e.kind === "order.cancelled") {
-    cancelled.add(e.orderId);
+    if (!cancelled.has(e.orderId)) cancelled.set(e.orderId, e.occurredAt);
   } else if (e.kind === "refund.requested") {
     if (seen.has(e.refundId)) continue;
     seen.add(e.refundId);

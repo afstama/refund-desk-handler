@@ -40,7 +40,7 @@ async function loadOrderState(client: pg.PoolClient, orderId: string): Promise<O
     totalMinor: Number(row.total_minor),
     refundedMinor: Number(row.refunded_minor),
     deliveredAt: facts.rows.find((f) => f.kind === "delivered")?.occurred_at ?? null,
-    cancelled: facts.rows.some((f) => f.kind === "cancelled"),
+    cancelledAt: facts.rows.find((f) => f.kind === "cancelled")?.occurred_at ?? null,
   };
 }
 

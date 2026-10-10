@@ -484,6 +484,76 @@ describe("refund decisions inside the pipeline", () => {
     assert.equal(await refunded("O-P7"), 0);
   });
 
+  test("one history gives one decision, whether order.created arrives on time or last (audit finding A)", async () => {
+    await resetDb();
+    // Timeline by occurred_at: created 04-05, delivered 04-08, refund 04-10, cancelled 04-12, second refund 04-13.
+    await send("a1", created("a1", "O-ON", "50.00", "2026-04-05T10:00:00Z"));
+    await send("a2", delivered("a2", "O-ON", "2026-04-08T10:00:00Z"));
+    await send("a3", refundEvent("a3", "R-ON", "O-ON", "10.00", "2026-04-10T10:00:00Z"));
+    await send("a4", cancelled("a4", "O-ON", "2026-04-12T10:00:00Z"));
+    await send("a5", refundEvent("a5", "R-ON2", "O-ON", "10.00", "2026-04-13T10:00:00Z"));
+
+    // The same history, but order.created arrives last, so both refunds are parked until then.
+    await send("b2", delivered("b2", "O-LATE", "2026-04-08T10:00:00Z"));
+    await send("b3", refundEvent("b3", "R-LATE", "O-LATE", "10.00", "2026-04-10T10:00:00Z"));
+    await send("b4", cancelled("b4", "O-LATE", "2026-04-12T10:00:00Z"));
+    await send("b5", refundEvent("b5", "R-LATE2", "O-LATE", "10.00", "2026-04-13T10:00:00Z"));
+    assert.equal((await refundRow("R-LATE")).decision, "parked");
+    await send("b1", created("b1", "O-LATE", "50.00", "2026-04-05T10:00:00Z"));
+
+    for (const [onTime, last] of [["R-ON", "R-LATE"], ["R-ON2", "R-LATE2"]] as const) {
+      const a = await refundRow(onTime);
+      const b = await refundRow(last);
+      assert.deepEqual({ ...b, decided: undefined }, { ...a, decided: undefined }, `${onTime} against ${last}`);
+    }
+    assert.equal((await refundRow("R-ON")).reason_code, "AUTO_OK"); // happened before the cancellation
+    assert.equal((await refundRow("R-ON2")).reason_code, "ORDER_CANCELLED"); // happened after it
+    assert.equal(await refunded("O-ON"), 1000);
+    assert.equal(await refunded("O-LATE"), 1000);
+  });
+
+  test("every event that touches an order waits for that order's lock (audit finding B)", async () => {
+    await resetDb();
+    // Hold the lock from a second connection, as a concurrent transaction on the same order would, and check that
+    // the event does not get through. Without the lock a refund could be parked just after the late order.created
+    // had looked for parked refunds, and stay parked for good.
+    const kinds: [string, (id: string, orderId: string) => string][] = [
+      ["order.created", (id, o) => created(id, o, "50.00", "2026-04-05T10:00:00Z")],
+      ["shipment.delivered", (id, o) => delivered(id, o, "2026-04-08T10:00:00Z")],
+      ["order.cancelled", (id, o) => cancelled(id, o, "2026-04-12T10:00:00Z")],
+      ["refund.requested", (id, o) => refundEvent(id, `R-${o}`, o, "10.00", "2026-04-10T10:00:00Z")],
+    ];
+    for (const [i, [name, make]] of kinds.entries()) {
+      const orderId = `O-LK${i}`;
+      const holder = await getPool().connect();
+      let pending: Promise<unknown> | undefined;
+      try {
+        await holder.query("BEGIN");
+        await holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [orderId]);
+        let finished = false;
+        pending = send(`lk${i}`, make(`lk${i}`, orderId)).then((r) => {
+          finished = true;
+          return r;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000)); // a request normally takes 100 to 600 ms
+        assert.equal(finished, false, `${name} did not wait for the order's lock`);
+        await holder.query("COMMIT");
+        assert.equal(((await pending) as { status: number }).status, 200, name);
+      } finally {
+        await holder.query("ROLLBACK").catch(() => {});
+        holder.release();
+        await pending?.catch(() => {});
+      }
+    }
+  });
+
+  test("a trailing slash on the path works too", async () => {
+    await resetDb();
+    const res = await deliver(app, "evt_ts", orderCreated("evt_ts", "O-TS"), { url: "/webhooks/" });
+    assert.deepEqual([res.status, res.json], [200, { status: "accepted" }]);
+    assert.equal((await app.inject({ method: "GET", url: "/health/" })).statusCode, 200);
+  });
+
   test("the database refuses to refund an order for more than its total, even if the code were wrong", async () => {
     await resetDb();
     await send("e1", created("e1", "O-P8", "10.00", "2026-04-05T10:00:00Z"));
