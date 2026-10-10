@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { decideRefund, toEurMinor, type OrderState, type RefundInput } from "../src/policy.js";
+import { AUTO_LIMIT_MINOR, decideRefund, policySummary, toEurMinor, WINDOW_DAYS, type OrderState, type RefundInput } from "../src/policy.js";
+import { CURRENCY_DIGITS, minorUnitDigits } from "../src/currency.js";
 
 const at = (iso: string) => new Date(iso);
 const DELIVERED = at("2026-04-10T21:30:00Z");
@@ -47,6 +48,58 @@ describe("toEurMinor", () => {
 
   test("a currency without a rate is null, including names from Object.prototype", () => {
     for (const currency of ["JPY", "CHF", "", "eur", "constructor", "__proto__"]) assert.equal(toEurMinor(100, currency), null, currency);
+  });
+
+  test("a currency with other decimals converts correctly once it has a rate (JPY 0, KWD 3)", () => {
+    // 1 JPY = 0.0062 EUR = 6200 millionths; 1 KWD = 3 EUR = 3 000 000 millionths
+    const rates = new Map([["JPY", 6200], ["KWD", 3_000_000], ["EUR", 1_000_000]]);
+    assert.equal(toEurMinor(10_000, "JPY", rates), 6200); // 10 000 yen = 62.00 EUR
+    assert.equal(toEurMinor(1000, "JPY", rates), 620); // 1000 yen = 6.20 EUR
+    assert.equal(toEurMinor(1, "JPY", rates), 1); // 0.0062 EUR = 0.62 cent, rounds up to 1
+    assert.equal(toEurMinor(1234, "KWD", rates), 370); // 1.234 KWD = 3.702 EUR = 370.2 cents, rounded half up
+  });
+
+  test("a very large amount does not lose precision", () => {
+    const rates = new Map([["USD", 920_000]]);
+    assert.equal(toEurMinor(99_999_999_999_999, "USD", rates), 91_999_999_999_999); // 9 999 999 999 999.99 USD
+  });
+});
+
+describe("one source for the policy numbers", () => {
+  test("policySummary is what the rules use: the limit and the window are the same numbers", () => {
+    const p = policySummary();
+    assert.equal(p.auto_approve.limit_minor, AUTO_LIMIT_MINOR);
+    assert.equal(p.auto_approve.window_days, WINDOW_DAYS);
+    const delivered = at("2026-04-10T00:00:00Z");
+    const o = order({ deliveredAt: delivered });
+    // exactly the limit passes, one cent more does not
+    assert.equal(outcome(refund({ amountMinor: p.auto_approve.limit_minor, occurredAt: at("2026-04-11T00:00:00Z") }), o), "auto_approved/AUTO_OK/policy");
+    assert.equal(outcome(refund({ amountMinor: p.auto_approve.limit_minor + 1, occurredAt: at("2026-04-11T00:00:00Z") }), o), "queued/OVER_THRESHOLD/none");
+    // exactly the window passes, one millisecond more does not
+    const edge = new Date(delivered.getTime() + p.auto_approve.window_days * 86_400_000);
+    assert.equal(outcome(refund({ occurredAt: edge }), o), "auto_approved/AUTO_OK/policy");
+    assert.equal(outcome(refund({ occurredAt: new Date(edge.getTime() + 1) }), o), "queued/WINDOW_EXPIRED/none");
+    // every listed reason is eligible, and one that is not listed is not
+    for (const reason of p.auto_approve.eligible_reasons) assert.equal(outcome(refund({ reason }), o), "auto_approved/AUTO_OK/policy", reason);
+    assert.equal(outcome(refund({ reason: "changed_mind" }), o), "queued/REASON_NOT_ELIGIBLE/none");
+  });
+
+  test("the rates are Marko's: 1 USD = 0.92 EUR and 1 GBP = 1.17 EUR, in millionths", () => {
+    const p = policySummary();
+    assert.deepEqual(p.eur_per_unit_micro, { EUR: 1_000_000, USD: 920_000, GBP: 1_170_000 });
+  });
+
+  test("the decimals table: the exceptions are listed, everything else is 2", () => {
+    const p = policySummary();
+    assert.equal(p.currency_digits.default, 2);
+    assert.equal(p.currency_digits.JPY, 0);
+    assert.equal(p.currency_digits.KWD, 3);
+    assert.equal(p.currency_digits.CLF, 4);
+    assert.equal(minorUnitDigits("EUR"), 2);
+    assert.equal(minorUnitDigits("JPY"), 0);
+    assert.equal(minorUnitDigits("constructor"), 2);
+    assert.equal(minorUnitDigits("__proto__"), 2);
+    assert.ok(!("EUR" in CURRENCY_DIGITS), "the default currencies are not listed");
   });
 });
 

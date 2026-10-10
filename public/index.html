@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Refund desk</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Refund desk</h1>
+      <p class="lede">Refunds the policy could not decide. A person approves or rejects each one.</p>
+    </header>
+
+    <main>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <section id="login" class="token" aria-labelledby="login-heading" hidden>
+        <h2 id="login-heading">Sign in</h2>
+        <form id="login-form">
+          <!-- a username field, hidden, so that a password manager can save and fill the token -->
+          <input type="text" name="username" value="approver" autocomplete="username" hidden />
+          <label for="token">Approver token</label>
+          <input id="token" name="password" type="password" autocomplete="current-password" spellcheck="false" />
+          <button id="signin" type="submit" class="approve">Sign in</button>
+        </form>
+        <p class="hint">Needed to see the queue and to approve or reject. You stay signed in for a working day.</p>
+      </section>
+
+      <div id="work" hidden>
+        <section aria-labelledby="count">
+          <div class="bar">
+            <h2 id="count">Loading the queue…</h2>
+            <div class="bar-actions">
+              <button id="refresh" type="button">Refresh</button>
+              <button id="signout" type="button">Sign out</button>
+            </div>
+          </div>
+          <div id="queue"></div>
+        </section>
+
+        <section aria-labelledby="log-heading">
+          <h2 id="log-heading">Decided in this session</h2>
+          <ol id="log"></ol>
+        </section>
+      </div>
+    </main>
+
+    <noscript><p class="status error">This page needs JavaScript to show the queue.</p></noscript>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

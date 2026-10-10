@@ -43,6 +43,28 @@ describe("classify: usable events", () => {
     assert.ok(r.ok && r.event.kind === "refund.requested" && r.event.amountMinor === 1100);
   });
 
+  test("an amount is read with the decimals of its own currency (JPY 0, EUR 2, KWD 3)", () => {
+    const refundIn = (currency: string, amount: unknown) => classify(refund({ ...goodRefund, currency, amount }));
+    const minor = (r: ReturnType<typeof classify>) => (r.ok && r.event.kind === "refund.requested" ? r.event.amountMinor : null);
+    assert.equal(minor(refundIn("EUR", "9.99")), 999);
+    assert.equal(minor(refundIn("JPY", "1500")), 1500); // 1500 yen, not 15.00
+    assert.equal(minor(refundIn("JPY", "1500.5")), 1501);
+    assert.equal(minor(refundIn("KWD", "1.234")), 1234);
+    assert.equal(minor(refundIn("KWD", 2)), 2000);
+    assert.equal(minor(refundIn("EUR", "10.999")), 1100);
+
+    const order = (currency: string, total: unknown) =>
+      classify({ id: "e", type: "order.created", occurred_at: at, payload: { order_id: "O-1", customer_email: "a@example.com", total, currency } });
+    const total = (r: ReturnType<typeof classify>) => (r.ok && r.event.kind === "order.created" ? r.event.totalMinor : null);
+    assert.equal(total(order("JPY", "12000")), 12000);
+    assert.equal(total(order("EUR", "29.97")), 2997);
+  });
+
+  test("a currency that is not three capital letters is refused before its amount is read", () => {
+    const d = detail(refund({ ...goodRefund, currency: "eur", amount: "5.00" }));
+    assert.equal(d, "refund.requested: payload.currency invalid");
+  });
+
   test("shipment.delivered and order.cancelled", () => {
     const d = classify({ id: "e", type: "shipment.delivered", occurred_at: at, payload: { order_id: "O-1" } });
     const c = classify({ id: "e", type: "order.cancelled", occurred_at: at, payload: { order_id: "O-1" } });
@@ -136,12 +158,23 @@ describe("classify: events that are refused (detail names the field, never the v
 });
 
 describe("EVENT_ID_FORMAT", () => {
-  test("accepts ids that look like real ones", () => {
-    for (const id of ["evt_0001", "evt_0420", "evt_t4a", "a.b:c-d_e", "x".repeat(64)]) assert.equal(EVENT_ID_FORMAT.test(id), true, id);
+  test("accepts any id scheme a sender is likely to use: counters, UUIDs, base64, prefixes with symbols", () => {
+    const good = [
+      "evt_0001",
+      "evt_t4a",
+      "a.b:c-d_e",
+      "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+      "evt_1MqLiJLkdIwHu7ixzAKbDDrf",
+      "dGVzdA==",
+      "AbC+/xyz=",
+      "tenant/42/evt#7",
+      "x".repeat(128),
+    ];
+    for (const id of good) assert.equal(EVENT_ID_FORMAT.test(id), true, id);
   });
 
-  test("refuses text a stranger could use to fill the ledger", () => {
-    const bad = ["", "evt 0001", "<img src=x onerror=alert(1)>", "evt_1;DROP TABLE events", "x".repeat(65), "evt_0001\n", "evt/0001", "evt_é"];
+  test("refuses what is not an id: empty, spaces, control characters, non-ASCII, longer than 128", () => {
+    const bad = ["", "evt 0001", "<img src=x onerror=alert(1)>", "evt\t1", "evt_0001\n", "evt_é", "evt_​1", "x".repeat(129)];
     for (const id of bad) assert.equal(EVENT_ID_FORMAT.test(id), false, JSON.stringify(id));
   });
 
@@ -163,7 +196,7 @@ describe("bodyIdProblem: the signed body must carry the id of the header", () =>
 
   test("a different id names the id the body carries, when it looks like an id", () => {
     assert.equal(bodyIdProblem({ id: "evt_0114" }, "evt_replay_1"), "body id does not match X-Event-Id (body says evt_0114)");
-    assert.equal(bodyIdProblem({ id: "<script>" }, "evt_1"), "body id does not match X-Event-Id");
+    assert.equal(bodyIdProblem({ id: "has a space" }, "evt_1"), "body id does not match X-Event-Id");
     assert.equal(bodyIdProblem({ id: "" }, "evt_1"), "body id does not match X-Event-Id");
   });
 

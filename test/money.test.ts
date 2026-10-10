@@ -44,6 +44,30 @@ describe("parseAmountMinor", () => {
     for (const [input, expected] of cases) assert.equal(parseAmountMinor(input), expected, input);
   });
 
+  test("the number of decimals is the currency's: JPY 0, EUR 2, KWD 3, CLF 4", () => {
+    const cases: [unknown, number, number | null][] = [
+      ["1000", 0, 1000], // 1000 yen
+      ["1000.4", 0, 1000], // rounds half up at the first extra digit
+      ["1000.5", 0, 1001],
+      ["0.4", 0, null], // rounds to zero
+      ["1.234", 3, 1234], // 1.234 dinar
+      ["1.2345", 3, 1235],
+      ["1.2344", 3, 1234],
+      ["5", 3, 5000],
+      ["0.0004", 3, null],
+      ["1.5", 4, 15000],
+      ["1.23456", 4, 12346],
+      [12.5, 0, 13], // a JSON number
+      ["9999999999.9999", 4, 99999999999999],
+    ];
+    for (const [input, digits, expected] of cases) assert.equal(parseAmountMinor(input, digits), expected, `${JSON.stringify(input)} with ${digits} decimals`);
+  });
+
+  test("two decimals stay the default", () => {
+    assert.equal(parseAmountMinor("10.999"), 1100);
+    assert.equal(parseAmountMinor("10.999", 2), 1100);
+  });
+
   test("refuses what would have to be guessed", () => {
     const bad: unknown[] = [
       "13,40", // evt_0124, decimal comma is locale dependent

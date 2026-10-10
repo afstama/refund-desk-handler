@@ -1,5 +1,6 @@
 // The refund policy from POLICY.md as one pure function: no database, no clock, no I/O.
 // Every comparison is in whole minor units, and time comes from the events, never from the server.
+import { CURRENCY_DIGITS, DEFAULT_MINOR_UNIT_DIGITS, minorUnitDigits } from "./currency.js";
 
 export type RefundDecision = "auto_approved" | "queued" | "rejected" | "parked";
 export type ReasonCode =
@@ -38,22 +39,50 @@ export interface PolicyDecision {
   note: string | null;
 }
 
-const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-const THRESHOLD_EUR_MINOR = 2000;
-const ELIGIBLE_REASONS = new Set(["damaged", "wrong_item", "not_received", "missing_item"]);
+// The numbers of POLICY.md and of Marko's answers. They live here and nowhere else: the screen is told them by
+// GET /policy (see policySummary) instead of repeating them in its own text.
+export const WINDOW_DAYS = 30;
+const WINDOW_MS = WINDOW_DAYS * 24 * 60 * 60 * 1000;
+export const AUTO_LIMIT_MINOR = 2000; // 20.00 EUR, in EUR cents
+export const AUTO_LIMIT_CURRENCY = "EUR";
+export const ELIGIBLE_REASONS = ["damaged", "wrong_item", "not_received", "missing_item"] as const;
+const ELIGIBLE_SET: ReadonlySet<string> = new Set(ELIGIBLE_REASONS);
 
-// Marko's fixed rates as whole percent: 1 USD = 0.92 EUR, 1 GBP = 1.17 EUR. A Map, so "constructor" is just unknown.
-const EUR_PERCENT = new Map([
-  ["EUR", 100],
-  ["USD", 92],
-  ["GBP", 117],
+/**
+ * Fixed rates: EUR per ONE unit of the currency, in millionths of a EUR (an integer, so no floats).
+ * Marko: 1 USD = 0.92 EUR, 1 GBP = 1.17 EUR. A Map, so "constructor" is just an unknown currency.
+ * A currency can be added here whatever its decimals: the conversion below takes them from currency.ts.
+ */
+export const EUR_MICRO_RATES: ReadonlyMap<string, number> = new Map([
+  ["EUR", 1_000_000],
+  ["USD", 920_000],
+  ["GBP", 1_170_000],
 ]);
 
-/** The amount in EUR cents, rounded half up, with integers only. null for a currency we have no rate for. */
-export function toEurMinor(amountMinor: number, currency: string): number | null {
-  const percent = EUR_PERCENT.get(currency);
-  if (percent === undefined) return null;
-  return Math.floor((amountMinor * percent + 50) / 100);
+/**
+ * The amount in EUR cents, rounded half up, with integers only (BigInt, so a large amount cannot lose precision).
+ * null for a currency we have no rate for. `rates` is a parameter only so that tests can try other currencies.
+ */
+export function toEurMinor(amountMinor: number, currency: string, rates: ReadonlyMap<string, number> = EUR_MICRO_RATES): number | null {
+  const micro = rates.get(currency);
+  if (micro === undefined) return null;
+  // EUR cents = amountMinor / 10^digits (major units) * micro / 10^6 (EUR) * 100 (cents)
+  const denominator = 10n ** BigInt(minorUnitDigits(currency) + 4);
+  return Number((BigInt(amountMinor) * BigInt(micro) * 2n + denominator) / (denominator * 2n));
+}
+
+/** What the screen needs to word its explanations, so that no number is typed in two places. */
+export function policySummary() {
+  return {
+    auto_approve: {
+      window_days: WINDOW_DAYS,
+      limit_minor: AUTO_LIMIT_MINOR,
+      limit_currency: AUTO_LIMIT_CURRENCY,
+      eligible_reasons: [...ELIGIBLE_REASONS],
+    },
+    eur_per_unit_micro: Object.fromEntries(EUR_MICRO_RATES),
+    currency_digits: { ...CURRENCY_DIGITS, default: DEFAULT_MINOR_UNIT_DIGITS } as Record<string, number>,
+  };
 }
 
 const decided = (decision: "auto_approved" | "rejected", reasonCode: ReasonCode): PolicyDecision => ({ decision, reasonCode, decidedBy: "policy", note: null });
@@ -90,8 +119,8 @@ export function decideRefund(refund: RefundInput, order: OrderState | null): Pol
 
   const delivered = order.deliveredAt !== null && order.deliveredAt.getTime() <= refund.occurredAt.getTime();
   const withinWindow = delivered && refund.occurredAt.getTime() - order.deliveredAt!.getTime() <= WINDOW_MS;
-  const underThreshold = eurMinor <= THRESHOLD_EUR_MINOR;
-  const eligibleReason = ELIGIBLE_REASONS.has(refund.reason);
+  const underThreshold = eurMinor <= AUTO_LIMIT_MINOR;
+  const eligibleReason = ELIGIBLE_SET.has(refund.reason);
 
   if (delivered && withinWindow && underThreshold && eligibleReason) return decided("auto_approved", "AUTO_OK");
 

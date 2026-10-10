@@ -308,7 +308,7 @@ describe("conflicts, races, outages and bad requests", () => {
 
   test("a header id that does not look like an id is answered 400 and never stored", async () => {
     await resetDb();
-    for (const id of ["<img src=x onerror=alert(1)>", "x".repeat(65), "evt 1", "evt_1;DROP"]) {
+    for (const id of ["<img src=x onerror=alert(1)>", "x".repeat(129), "evt 1", "evt\t1"]) {
       const signed = await deliver(app, id, orderCreated("evt_h1", "O-H1"));
       const unsigned = await deliver(app, id, orderCreated("evt_h1", "O-H1"), { signature: null });
       assert.equal(signed.status, 400, id);

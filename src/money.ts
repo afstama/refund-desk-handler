@@ -1,19 +1,19 @@
 const AMOUNT = /^(\d+)(?:\.(\d+))?$/;
 
-// Up to 9,999,999,999.99 in one currency: keeps every minor-unit value an exact integer in a JS number.
+// Up to 9,999,999,999 whole units: with at most 4 decimals that is below 1e14, an exact integer in a JS number.
 const MAX_WHOLE_DIGITS = 10;
 
 /**
- * Reads an amount as whole minor units (cents, pence), or returns null when it cannot be read.
+ * Reads an amount as whole minor units (cents, pence, yen), or returns null when it cannot be read.
  *
+ * `digits` is the number of decimals of the amount's currency (see currency.ts): 2 for EUR, 0 for JPY, 3 for KWD.
  * Works on the digits as text, never with float arithmetic:
  *   - a JSON number becomes its text first (11.4 -> "11.4"), a string is trimmed, anything else is refused
  *   - the text must be digits with an optional decimal part (no sign, no comma, no exponent)
- *   - more than two decimals are rounded half up to the cent: the third digit decides
+ *   - more decimals than the currency has are rounded half up: the first extra digit decides
  *   - the result must be greater than zero
- * Assumes two minor-unit digits, which holds for EUR, USD and GBP.
  */
-export function parseAmountMinor(value: unknown): number | null {
+export function parseAmountMinor(value: unknown, digits = 2): number | null {
   let text: string;
   if (typeof value === "number") text = String(value);
   else if (typeof value === "string") text = value.trim();
@@ -26,7 +26,8 @@ export function parseAmountMinor(value: unknown): number | null {
   if (whole.length > MAX_WHOLE_DIGITS) return null;
   const fraction = match[2] ?? "";
 
-  let minor = Number(whole) * 100 + Number(fraction.slice(0, 2).padEnd(2, "0"));
-  if (fraction.length > 2 && fraction.charCodeAt(2) >= 53 /* "5" */) minor += 1;
-  return minor > 0 ? minor : null;
+  const kept = digits > 0 ? Number(fraction.slice(0, digits).padEnd(digits, "0")) : 0;
+  let minor = Number(whole) * 10 ** digits + kept;
+  if (fraction.length > digits && fraction.charCodeAt(digits) >= 53 /* "5" */) minor += 1;
+  return minor > 0 && Number.isSafeInteger(minor) ? minor : null;
 }

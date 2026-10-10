@@ -159,6 +159,49 @@ export function assembleLedger(rows: LedgerRows): Ledger {
   };
 }
 
+/** What the approval screen needs: the queued refunds and the orders they belong to. In the ledger's own shape. */
+export interface Queue {
+  orders: Record<string, LedgerOrder>;
+  refunds: Record<string, LedgerRefund>;
+}
+
+/**
+ * The queued refunds and their orders, in one snapshot like the ledger. Private (session or Bearer): the screen
+ * reads this instead of the public ledger, and it is the place for data the ledger must not carry.
+ */
+export async function readQueue(pool: pg.Pool = getPool()): Promise<Queue> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const refunds = await client.query<LedgerRows["refunds"][number]>(
+      `SELECT refund_id, order_id, currency, amount_minor, decision, reason_code, decided_by, reason, note
+       FROM refunds WHERE decision = 'queued' ORDER BY refund_id`,
+    );
+    const orderIds = [...new Set(refunds.rows.map((r) => r.order_id))];
+    const orders = await client.query<LedgerRows["orders"][number]>(
+      "SELECT order_id, currency, total_minor, refunded_minor FROM orders WHERE order_id = ANY($1) ORDER BY order_id",
+      [orderIds],
+    );
+    const orderEvents = await client.query<LedgerRows["orderEvents"][number]>("SELECT order_id, kind FROM order_events WHERE order_id = ANY($1)", [orderIds]);
+    await client.query("COMMIT");
+    const shaped = assembleLedger({
+      orders: orders.rows,
+      orderEvents: orderEvents.rows,
+      refunds: refunds.rows,
+      messages: [],
+      deadLetter: [],
+      duplicatesIgnored: 0,
+      unknownTypesAcked: 0,
+    });
+    return { orders: shaped.orders, refunds: shaped.refunds };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /**
  * Reads everything in ONE snapshot (repeatable read, read only), so an order's refunded_minor always agrees with
  * the refunds listed next to it, even while events are being applied. Keys come out in a stable order.

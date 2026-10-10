@@ -2,10 +2,13 @@ import Fastify from "fastify";
 import { applyEvent } from "./apply.js";
 import { approvalRoutes, decideByHuman, type ApprovalDeps } from "./approvals.js";
 import { getPool } from "./db.js";
-import { readLedger } from "./ledger.js";
+import { readLedger, readQueue } from "./ledger.js";
+import { policySummary } from "./policy.js";
+import { screenRoutes } from "./screen.js";
+import { sessionRoutes, type SessionDeps } from "./sessionRoutes.js";
 import { webhookRoutes, type WebhookDeps } from "./webhooks.js";
 
-export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"]; decide?: ApprovalDeps["decide"] } = {}) {
+export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"]; decide?: ApprovalDeps["decide"]; readQueue?: SessionDeps["readQueue"] } = {}) {
   // POST /webhooks/ must work as well as POST /webhooks: a sender that adds a slash must not get a 404.
   const app = Fastify({ logger: opts.logger ?? false, ignoreTrailingSlash: true });
 
@@ -19,6 +22,9 @@ export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"];
     }
   });
 
+  // The numbers of the policy, for the screen. Not secret: they are in POLICY.md and in Marko's answers.
+  app.get("/policy", async (_req, reply) => reply.header("cache-control", "no-cache").send(policySummary()));
+
   // Public by contract: only approve and reject need the bearer token. It holds no email and no message text.
   app.get("/ledger", async (_req, reply) => {
     try {
@@ -31,8 +37,15 @@ export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"];
     }
   });
 
+  // The browser must not guess a type for any answer, including the JSON ones.
+  app.addHook("onSend", async (_req, reply) => {
+    reply.header("x-content-type-options", "nosniff");
+  });
+
+  app.register(screenRoutes());
   app.register(webhookRoutes({ apply: opts.apply ?? applyEvent }));
   app.register(approvalRoutes({ decide: opts.decide ?? decideByHuman }));
+  app.register(sessionRoutes({ readQueue: opts.readQueue ?? readQueue }));
 
   return app;
 }

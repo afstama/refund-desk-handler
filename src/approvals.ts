@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { bearerToken, tokenMatches } from "./auth.js";
+import { authenticate, isSecureRequest } from "./auth.js";
 import { getConfig } from "./config.js";
 import { decideByHuman, type HumanAction, type HumanDecisionResult } from "./decisions.js";
 
@@ -9,8 +9,8 @@ export interface ApprovalDeps {
 
 /**
  * POST /refunds/:refund_id/approve and /reject (CONTRACT.md).
- *   401 missing or wrong token. Checked BEFORE the refund is looked up, so a caller without the token
- *       cannot learn which refund ids exist (Marko agreed on 404 for unknown ids, behind the token).
+ *   401 no valid Bearer token and no valid login session. Checked BEFORE the refund is looked up, so a caller
+ *       without credentials cannot learn which refund ids exist (Marko agreed on 404 for unknown ids, behind them).
  *   404 unknown refund, 409 already decided / not queued / cancelled / currency / no longer fits, 200 done.
  *   503 only when the database is unreachable.
  */
@@ -24,7 +24,8 @@ export function approvalRoutes(deps: ApprovalDeps) {
 
     for (const action of ["approve", "reject"] as const) {
       scope.post<{ Params: { refund_id: string } }>(`/refunds/:refund_id/${action}`, { bodyLimit: 1024 }, async (req, reply) => {
-        if (!tokenMatches(getConfig().APPROVER_TOKEN, bearerToken(req.headers.authorization))) {
+        // The Bearer header (CONTRACT.md) or a login session that also carries the same-origin header.
+        if (!authenticate(req.headers, getConfig().APPROVER_TOKEN, isSecureRequest(req.protocol, process.env.NODE_ENV))) {
           return reply.code(401).header("www-authenticate", 'Bearer realm="refund-desk"').send({ error: "unauthorized" });
         }
         try {
