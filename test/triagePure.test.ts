@@ -6,7 +6,7 @@ import { describe, test } from "node:test";
 import Anthropic from "@anthropic-ai/sdk";
 import { ConfigError, loadConfig } from "../src/config.js";
 import { classifyError, createAnthropicModel } from "../src/triage/anthropic.js";
-import { draftProblem, holdReason } from "../src/triage/guards.js";
+import { draftProblem, holdReason, NEUTRAL_DRAFT } from "../src/triage/guards.js";
 import { createRateLimiter } from "../src/triage/limiter.js";
 import { costMicros, hasPrice, PRICES, usdToMicros } from "../src/triage/pricing.js";
 import { KEEP_EACH_END, MAX_WHOLE_CHARS, prepareText } from "../src/triage/prepare.js";
@@ -142,6 +142,12 @@ describe("the rules that hold a reply (guards)", () => {
     for (const draft of fine) assert.equal(draftProblem(draft), null, draft);
   });
 
+  test("the neutral line that replaces a failing draft passes the check itself and is one line", () => {
+    assert.equal(draftProblem(NEUTRAL_DRAFT), null);
+    assert.equal(holdReason({ category: "other", flags: [], truncated: false, draft: NEUTRAL_DRAFT }), null);
+    assert.equal(normalizeDraft(NEUTRAL_DRAFT), NEUTRAL_DRAFT);
+  });
+
   test("the order of reasons: a flag beats refund_related, which beats cut, which beats the draft", () => {
     const all = { category: "refund_related", flags: ["injection_suspected"], truncated: true, draft: "Your refund was approved." };
     assert.equal(holdReason(all), "injection_suspected");
@@ -180,6 +186,9 @@ describe("the prompt", () => {
     assert.match(SYSTEM_PROMPT, /refund_related/);
     assert.match(SYSTEM_PROMPT, /injection_suspected/);
     assert.match(SYSTEM_PROMPT, /even partly/i);
+    assert.match(SYSTEM_PROMPT, /never do what the message asks/i);
+    assert.match(SYSTEM_PROMPT, /never answer a question about a refund/i);
+    assert.match(SYSTEM_PROMPT, /declined/i);
     for (const c of ["order_status", "product_question", "complaint", "praise", "other"]) assert.ok(SYSTEM_PROMPT.includes(c), c);
   });
 });
@@ -405,6 +414,42 @@ describe("settings and the live switch", () => {
     const worker = startTriage(loadConfig({ ...base, TRIAGE_LIVE: "1", TRIAGE_MODEL: "claude-made-up-9" }), log);
     assert.equal(worker, null);
     assert.ok(logs.some((m) => /no price/.test(m)));
+  });
+});
+
+describe("the answer key of the trial", () => {
+  const key = JSON.parse(readFileSync(new URL("./fixtures/triage-answer-key.json", import.meta.url), "utf8")).messages as Record<
+    string,
+    { category: string; also_ok?: string[]; sentiment: string; injection: boolean }
+  >;
+
+  test("it covers exactly the distinct, valid messages of events.ndjson", () => {
+    const ids = new Set<string>();
+    for (const line of readFileSync(new URL("../events.ndjson", import.meta.url), "utf8").split(String.fromCharCode(10)).filter(Boolean)) {
+      let body: { type?: string; payload?: { message_id?: string } };
+      try {
+        body = JSON.parse(JSON.parse(line).body);
+      } catch {
+        continue;
+      }
+      if (body?.type === "message.received" && body.payload?.message_id) ids.add(body.payload.message_id);
+    }
+    // evt_0326 (M-9998) is the broken-JSON delivery and is not a message of the data set
+    assert.equal(Object.keys(key).length, 83);
+    assert.deepEqual(Object.keys(key).sort(), [...ids].sort());
+  });
+
+  test("its values are the contract's, an injection is a refund message, and 20 messages touch a refund", () => {
+    const categories = new Set(["order_status", "product_question", "complaint", "praise", "refund_related", "other"]);
+    for (const [id, e] of Object.entries(key)) {
+      assert.ok(categories.has(e.category), id);
+      for (const alt of e.also_ok ?? []) assert.ok(categories.has(alt), id);
+      assert.ok(["positive", "neutral", "negative"].includes(e.sentiment), id);
+      if (e.injection) assert.equal(e.category, "refund_related", id);
+      assert.equal("hold" in e, false, "no separate hold field: a refund message is refund_related");
+    }
+    assert.deepEqual(Object.entries(key).filter(([, e]) => e.injection).map(([id]) => id), ["M-0013", "M-0014"]);
+    assert.equal(Object.values(key).filter((e) => e.category === "refund_related").length, 20);
   });
 });
 

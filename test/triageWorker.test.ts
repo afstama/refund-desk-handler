@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { createRateLimiter } from "../src/triage/limiter.js";
 import { ModelError } from "../src/triage/model.js";
+import { NEUTRAL_DRAFT } from "../src/triage/guards.js";
 import { KEEP_EACH_END, MAX_WHOLE_CHARS } from "../src/triage/prepare.js";
 import { BACKOFF_MS, createWorker, MAX_ATTEMPTS, type WorkerDeps } from "../src/triage/worker.js";
 import { fakeClock, fakeSender, fakeStore, invalid, ok, refusal, scriptedModel, type FakeStore } from "./helpers/fakeTriage.js";
@@ -64,6 +65,25 @@ describe("triage worker: what is sent and what is held", () => {
     await worker.kick();
     assert.equal(held(store, "M-13"), "draft_check");
     assert.equal(sender.sent.length, 0);
+    // the ledger would show the neutral line, not the promise; what the model wrote is kept apart
+    assert.equal(store.messages.get("M-13")!.result!.draft, NEUTRAL_DRAFT);
+    assert.equal(store.messages.get("M-13")!.result!.originalDraft, "Your refund has been approved.");
+  });
+
+  test("a refund_related message whose draft talks about the refund shows the neutral line; a harmless draft is kept as written", async () => {
+    const { store, worker } = setup(
+      { "M-15": "I'd like a refund for order O-1032", "M-2": "when is the night cream back?" },
+      {
+        "M-15": [ok({ category: "refund_related", draft_reply: "We have received your refund request and will process it." })],
+        "M-2": [ok({ category: "product_question", draft_reply: "Thanks, we will check the stock and get back to you." })],
+      },
+    );
+    await worker.kick();
+    assert.equal(held(store, "M-15"), "refund_related");
+    assert.equal(store.messages.get("M-15")!.result!.draft, NEUTRAL_DRAFT);
+    assert.equal(store.messages.get("M-15")!.result!.originalDraft, "We have received your refund request and will process it.");
+    assert.equal(store.messages.get("M-2")!.result!.draft, "Thanks, we will check the stock and get back to you.");
+    assert.equal(store.messages.get("M-2")!.result!.originalDraft, null);
   });
 
   test("a flagged message is held even with a harmless draft and a harmless category", async () => {

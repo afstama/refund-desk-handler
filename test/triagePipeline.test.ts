@@ -8,6 +8,7 @@ import { getConfig } from "../src/config.js";
 import { closePool, getPool } from "../src/db.js";
 import type { Ledger } from "../src/ledger.js";
 import { createBudget } from "../src/triage/budget.js";
+import { draftProblem, NEUTRAL_DRAFT } from "../src/triage/guards.js";
 import { createRateLimiter } from "../src/triage/limiter.js";
 import type { TriageModel } from "../src/triage/model.js";
 import { usdToMicros } from "../src/triage/pricing.js";
@@ -130,7 +131,28 @@ describe("from a webhook to the ledger", () => {
     assert.equal(l.messages["M-0013"]!.auto_reply_sent, false);
     assert.equal(l.refunds["R-9000"]!.decision, "queued");
     assert.equal(l.orders["O-9000"]!.refunded_minor, 0);
-    assert.equal((await rows("SELECT held_reason FROM messages"))[0].held_reason, "draft_check");
+    const stored = (await rows("SELECT held_reason, draft_reply, original_draft FROM messages"))[0];
+    assert.equal(stored.held_reason, "draft_check");
+    // the public ledger shows the neutral line; the promise the model wrote is kept in the database only
+    assert.equal(l.messages["M-0013"]!.draft_reply, NEUTRAL_DRAFT);
+    assert.equal(stored.original_draft, "Your refund has been approved.");
+    assert.ok(!JSON.stringify(l).includes("has been approved"));
+  });
+
+  test("no draft in the ledger ever fails the draft check, whatever the model wrote", async () => {
+    const bad = ["Your refund has been approved.", "We will send your money back.", "You will receive €12.50.", "Approved! A credit is on its way."];
+    for (const [i, draft] of bad.entries()) await receive(`M-${i + 1}`, `message ${i + 1}`);
+    const scripted = scriptedModel(
+      Object.fromEntries(bad.map((d, i) => [`M-${i + 1}`, [ok({ category: "other", draft_reply: d })]])),
+    );
+    await worker(scripted.model).kick();
+    const l = await ledger();
+    assert.equal(Object.keys(l.messages).length, bad.length);
+    for (const m of Object.values(l.messages)) {
+      assert.equal(draftProblem(m.draft_reply), null, m.draft_reply);
+      assert.equal(m.auto_reply_sent, false);
+    }
+    assert.equal((await rows("SELECT count(*)::int AS n FROM outbound_log"))[0].n, 0);
   });
 
   test("the claim of M-0014 (a flagged message with a harmless draft) is held and flagged in the ledger", async () => {

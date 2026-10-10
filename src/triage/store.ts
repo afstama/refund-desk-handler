@@ -21,7 +21,10 @@ export interface DueReply {
 export interface TriageResult {
   category: string;
   sentiment: string;
+  /** What goes into the ledger and is sent: the model's draft, or the neutral line when the draft check replaced it. */
   draft: string;
+  /** What the model wrote when it was replaced, otherwise null. */
+  originalDraft: string | null;
   flags: string[];
   truncated: boolean;
   held: HeldReason | null;
@@ -73,9 +76,9 @@ export function createPgStore(pool: pg.Pool = getPool()): TriageStore {
     async finish(messageId, r) {
       const res = await pool.query(
         `UPDATE messages SET triage_status = 'done', category = $2, sentiment = $3, draft_reply = $4, flags = $5::text[],
-                truncated = $6, held_reason = $7, model = $8, triaged_at = now()
+                truncated = $6, held_reason = $7, model = $8, original_draft = $9, triaged_at = now()
          WHERE message_id = $1 AND triage_status = 'pending'`,
-        [messageId, r.category, r.sentiment, r.draft, r.flags, r.truncated, r.held, r.model],
+        [messageId, r.category, r.sentiment, r.draft, r.flags, r.truncated, r.held, r.model, r.originalDraft],
       );
       return (res.rowCount ?? 0) > 0;
     },

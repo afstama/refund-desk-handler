@@ -27,6 +27,13 @@ const DRAFT_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: "amount", pattern: /[€$£]\s*\d|\d[\d.,]*\s*(?:[€$£]|eur(?:os?)?\b|usd\b|dollars?\b|gbp\b|pounds?\b)/iu },
 ];
 
+/**
+ * What the ledger shows instead of a draft that fails the check (Ana's decision): a message whose draft promises
+ * or mentions a refund, an approval or money is held, and its draft_reply is this line, so the public ledger never
+ * shows a promise. What the model wrote is kept in messages.original_draft. It passes the check itself (tested).
+ */
+export const NEUTRAL_DRAFT = "Thank you for your message. Our team will review it and get back to you.";
+
 /** The first thing wrong with a draft, or null when it promises nothing. */
 export function draftProblem(draft: string): string | null {
   for (const { name, pattern } of DRAFT_PATTERNS) if (pattern.test(draft)) return name;

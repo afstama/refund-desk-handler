@@ -85,6 +85,7 @@ interface KeyEntry {
   sentiment: string;
   sentiment_also_ok?: string[];
   injection: boolean;
+  note?: string;
 }
 const key: Record<string, KeyEntry> = existsSync(KEY_FILE) ? JSON.parse(readFileSync(KEY_FILE, "utf8")).messages : {};
 
@@ -229,6 +230,7 @@ async function main() {
       held: r?.held ?? (s.status === "failed" ? "triage_failed" : s.status === "pending" ? "not_run" : null),
       truncated: r?.truncated ?? false,
       draft: r?.draft ?? null,
+      original_draft: r?.originalDraft ?? null,
       sent: s.sent,
       key_category: k?.category ?? null,
       key_sentiment: k?.sentiment ?? null,
@@ -242,7 +244,7 @@ async function main() {
   for (const r of rowsOut) {
     const catMark = r.category === r.key_category ? " " : r.key_category && key[r.id]?.also_ok?.includes(r.category ?? "") ? "~" : "x";
     lines.push(
-      `${pad(r.id, 7)}${pad((r.category ?? "-") + catMark, 17)}${pad(r.key_category ?? "-", 17)}${pad(r.sentiment ?? "-", 10)}${pad(r.key_sentiment ?? "-", 9)}${pad(r.flags.length ? "INJ" : "", 5)}${pad(r.held ?? "SENT", 20)}${r.draft ?? ""}`,
+      `${pad(r.id, 7)}${pad((r.category ?? "-") + catMark, 17)}${pad(r.key_category ?? "-", 17)}${pad(r.sentiment ?? "-", 10)}${pad(r.key_sentiment ?? "-", 9)}${pad(r.flags.length ? "INJ" : "", 5)}${pad(r.held ?? "SENT", 20)}${r.original_draft ? `[replaced; the model wrote: ${r.original_draft}]` : (r.draft ?? "")}`,
     );
   }
   console.log(lines.join("\n"));
@@ -253,7 +255,10 @@ async function main() {
   const exactS = done.filter((r) => r.sentiment === r.key_sentiment).length;
   const okS = done.filter((r) => r.sentiment === r.key_sentiment || key[r.id]?.sentiment_also_ok?.includes(r.sentiment ?? "")).length;
   const keyRefund = done.filter((r) => r.key_category === "refund_related");
-  const missedRefund = keyRefund.filter((r) => r.category !== "refund_related");
+  // the safety measure: a refund message of the key whose reply the code would send automatically
+  const wouldSend = keyRefund.filter((r) => r.sent);
+  // held although the key says it may be answered (a cut message is held by rule, not by the model)
+  const overHeld = done.filter((r) => r.key_category !== "refund_related" && r.held !== null);
   const extraRefund = done.filter((r) => r.category === "refund_related" && r.key_category !== "refund_related");
   const keyInj = done.filter((r) => r.key_injection);
   const flagged = done.filter((r) => r.flags.length > 0);
@@ -273,16 +278,18 @@ async function main() {
     `calls: ${store.calls.length}   input tokens: ${inTok}   output tokens: ${outTok}   cost: ${microsToUsd(runMicros)}   per message: ${microsToUsd(perMessage)}   at 10,000 messages a day: about ${microsToUsd(perMessage * 10_000)}`,
     `latency per call: median ${percentile(sortedLat, 50)} ms, p95 ${percentile(sortedLat, 95)} ms, max ${sortedLat.at(-1) ?? 0} ms   whole run: ${(elapsedMs / 1000).toFixed(1)} s`,
     `category: exact ${exactC}/${done.length}, or an accepted alternative ${okC}/${done.length}      sentiment: exact ${exactS}/${done.length}, or accepted ${okS}/${done.length}`,
-    `refund_related per the key: ${keyRefund.length}; the model called ${keyRefund.length - missedRefund.length} of them refund_related; extra refund_related calls: ${extraRefund.length}`,
+    `refund messages in the key: ${keyRefund.length}; held by the code: ${keyRefund.length - wouldSend.length}; WOULD BE SENT (the safety measure, should be 0): ${wouldSend.length}; held although the key says it may be answered: ${overHeld.length}`,
     `injection per the key: ${keyInj.map((r) => r.id).join(", ") || "-"}; flagged by the model: ${flagged.map((r) => r.id).join(", ") || "-"}`,
     `replies that would be sent automatically: ${rowsOut.filter((r) => r.sent).length}; held: ${JSON.stringify(heldBy)}`,
     "",
-    `-- key says refund_related, the model did not (under rule A these would be answered automatically unless the draft check holds them): ${missedRefund.length}`,
-    ...missedRefund.map((r) => `   ${r.id} model: ${r.category}, held: ${r.held ?? "NO (would be sent)"}, draft: ${r.draft}   text: ${r.text}`),
+    `-- a refund message of the key whose reply WOULD BE SENT: ${wouldSend.length}`,
+    ...wouldSend.map((r) => `   ${r.id} model: ${r.category} (key: ${r.key_category}), draft: ${r.draft}   text: ${r.text}`),
+    `-- held although the key says it may be answered: ${overHeld.length}`,
+    ...overHeld.map((r) => `   ${r.id} model: ${r.category}, held: ${r.held}   text: ${r.text}`),
     `-- the text has refund-like words and the model did not say refund_related (Ana decides whether a check on the text is wanted): ${wordsNotRefund.length}`,
     ...wordsNotRefund.map((r) => `   ${r.id} model: ${r.category}, held: ${r.held ?? "NO (would be sent)"}, text: ${r.text}`),
-    `-- held by the draft check: ${rowsOut.filter((r) => r.held === "draft_check").length}`,
-    ...rowsOut.filter((r) => r.held === "draft_check").map((r) => `   ${r.id}: ${r.draft}`),
+    `-- drafts replaced by the neutral line because they mention a refund, an approval or money: ${rowsOut.filter((r) => r.original_draft !== null).length}`,
+    ...rowsOut.filter((r) => r.original_draft !== null).map((r) => `   ${r.id} (held: ${r.held}): the model wrote: ${r.original_draft}`),
     `-- the model said refund_related but the key does not: ${extraRefund.length}`,
     ...extraRefund.map((r) => `   ${r.id} key: ${r.key_category}   text: ${r.text}`),
   ];

@@ -1,5 +1,5 @@
 import type { Budget } from "./budget.js";
-import { holdReason } from "./guards.js";
+import { draftProblem, holdReason, NEUTRAL_DRAFT } from "./guards.js";
 import type { RateLimiter } from "./limiter.js";
 import { ModelError, type ModelAnswer, type TriageModel } from "./model.js";
 import { prepareText } from "./prepare.js";
@@ -150,11 +150,15 @@ export function createWorker(deps: WorkerDeps): Worker {
     if (draft === null) return retryLater(m, "empty draft");
 
     const flags = flagsFor(answer.output);
+    // judged on what the model wrote. A draft that fails the check is held AND replaced, so the ledger never shows it.
     const held = holdReason({ category: answer.output.category, flags, truncated: prepared.truncated, draft });
+    const replaced = draftProblem(draft) !== null;
+    const shown = replaced ? NEUTRAL_DRAFT : draft;
     const stored = await deps.store.finish(m.message_id, {
       category: answer.output.category,
       sentiment: answer.output.sentiment,
-      draft,
+      draft: shown,
+      originalDraft: replaced ? draft : null,
       flags,
       truncated: prepared.truncated,
       held,
@@ -167,7 +171,7 @@ export function createWorker(deps: WorkerDeps): Worker {
     }
     log.info({ message_id: m.message_id, category: answer.output.category, held, truncated: prepared.truncated }, "triaged");
 
-    if (held === null) await trySend(m.message_id, draft);
+    if (held === null) await trySend(m.message_id, shown);
   }
 
   async function triagePending(): Promise<void> {
