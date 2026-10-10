@@ -31,7 +31,47 @@ describe("assembleLedger (no database)", () => {
       dead_letter: [],
       duplicates_ignored: 0,
       unknown_types_acked: 0,
+      unmatched_order_events: {},
     });
+  });
+
+  test("unmatched_order_events lists what waits for an order we have not seen, sorted", () => {
+    const refund = (id: string, orderId: string, decision: string) => ({
+      refund_id: id, order_id: orderId, currency: "EUR", amount_minor: 500, decision,
+      reason_code: decision === "parked" ? "ORDER_UNKNOWN" : "AUTO_OK", decided_by: decision === "parked" ? "none" : "policy", reason: "damaged", note: null,
+    });
+    const ledger = assembleLedger({
+      ...emptyRows,
+      orders: [{ order_id: "O-SEEN", currency: "EUR", total_minor: 1000, refunded_minor: 0 }],
+      orderEvents: [
+        { order_id: "O-Z", kind: "delivered" },
+        { order_id: "O-Z", kind: "cancelled" },
+        { order_id: "O-A", kind: "delivered" },
+        { order_id: "O-SEEN", kind: "delivered" }, // its order is known: not unmatched
+      ],
+      refunds: [refund("R-2", "O-A", "parked"), refund("R-1", "O-A", "parked"), refund("R-3", "O-ONLY-REFUND", "parked"), refund("R-4", "O-SEEN", "auto_approved")],
+    });
+    assert.deepEqual(ledger.unmatched_order_events, {
+      "O-A": { events: ["delivered"], parked_refunds: ["R-1", "R-2"] },
+      "O-ONLY-REFUND": { events: [], parked_refunds: ["R-3"] },
+      "O-Z": { events: ["cancelled", "delivered"], parked_refunds: [] },
+    });
+    assert.deepEqual(Object.keys(ledger.unmatched_order_events), ["O-A", "O-ONLY-REFUND", "O-Z"]);
+  });
+
+  test("ids named like Object.prototype members stay ordinary keys", () => {
+    const ledger = assembleLedger({
+      ...emptyRows,
+      orders: [
+        { order_id: "__proto__", currency: "EUR", total_minor: 1000, refunded_minor: 0 },
+        { order_id: "constructor", currency: "USD", total_minor: 2000, refunded_minor: 0 },
+      ],
+      orderEvents: [{ order_id: "toString", kind: "delivered" }],
+    });
+    const roundTrip = JSON.parse(JSON.stringify(ledger)) as Ledger;
+    assert.deepEqual(Object.keys(roundTrip.orders).sort(), ["__proto__", "constructor"]);
+    assert.equal(Object.getOwnPropertyDescriptor(roundTrip.orders, "__proto__")?.value.total_minor, 1000);
+    assert.deepEqual(Object.keys(roundTrip.unmatched_order_events), ["toString"]);
   });
 
   test("status: cancelled wins over delivered, delivered over created", () => {
@@ -103,7 +143,15 @@ describe("GET /ledger on the empty database", () => {
     assert.equal(res.statusCode, 200);
     assert.match(String(res.headers["content-type"]), /application\/json/);
     assert.equal(res.headers["cache-control"], "no-store");
-    assert.deepEqual(ledger, { orders: {}, refunds: {}, messages: {}, dead_letter: [], duplicates_ignored: 0, unknown_types_acked: 0 });
+    assert.deepEqual(ledger, {
+      orders: {},
+      refunds: {},
+      messages: {},
+      dead_letter: [],
+      duplicates_ignored: 0,
+      unknown_types_acked: 0,
+      unmatched_order_events: {},
+    });
   });
 });
 
@@ -119,8 +167,21 @@ describe("GET /ledger after a full replay of events.ndjson", () => {
     ledger = res.json() as Ledger;
   });
 
-  test("the five contract blocks and nothing renamed", () => {
-    assert.deepEqual(Object.keys(ledger), ["orders", "refunds", "messages", "dead_letter", "duplicates_ignored", "unknown_types_acked"]);
+  test("the contract blocks in contract order, nothing renamed, and one extra block after them", () => {
+    assert.deepEqual(Object.keys(ledger), [
+      "orders",
+      "refunds",
+      "messages",
+      "dead_letter",
+      "duplicates_ignored",
+      "unknown_types_acked",
+      "unmatched_order_events",
+    ]);
+  });
+
+  test("nothing is waiting for an order once the whole file has been replayed", () => {
+    assert.deepEqual(ledger.unmatched_order_events, {});
+    assert.ok(Object.values(ledger.refunds).every((r) => r.decision !== "parked"));
   });
 
   test("orders: 121, with status from the events (110 delivered, 4 cancelled, 7 created)", () => {
@@ -250,6 +311,32 @@ describe("GET /ledger in other situations", () => {
       note: null,
     });
     assert.deepEqual(ledger.orders, {});
+  });
+
+  test("an order that never arrives shows what waits for it, and the entry goes when the order comes", async () => {
+    await resetDb();
+    await deliver(app, "g1", event("g1", "shipment.delivered", { order_id: "O-GHOST" }, "2026-04-05T10:00:00Z"));
+    await deliver(app, "g2", event("g2", "order.cancelled", { order_id: "O-GHOST" }, "2026-04-06T10:00:00Z"));
+    await deliver(app, "g3", event("g3", "refund.requested", { refund_id: "R-GHOST", order_id: "O-GHOST", amount: "5.00", currency: "EUR", reason: "damaged" }, "2026-04-07T10:00:00Z"));
+
+    let { ledger } = await getLedger();
+    assert.deepEqual(ledger.orders, {});
+    assert.deepEqual(ledger.unmatched_order_events, { "O-GHOST": { events: ["cancelled", "delivered"], parked_refunds: ["R-GHOST"] } });
+
+    // the order arrives late: everything that waited is used, and nothing is listed as waiting any more
+    await deliver(app, "g4", event("g4", "order.created", { order_id: "O-GHOST", customer_email: "a@example.com", total: "20.00", currency: "EUR" }, "2026-04-01T10:00:00Z"));
+    ({ ledger } = await getLedger());
+    assert.deepEqual(ledger.unmatched_order_events, {});
+    assert.equal(ledger.orders["O-GHOST"]!.status, "cancelled");
+    assert.equal(ledger.refunds["R-GHOST"]!.decision, "rejected"); // cancelled at 04-06, refund at 04-07
+  });
+
+  test("an order id named like Object.prototype members is listed, end to end", async () => {
+    await resetDb();
+    await deliver(app, "x1", event("x1", "order.created", { order_id: "__proto__", customer_email: "a@example.com", total: "9.99", currency: "EUR" }));
+    const { res } = await getLedger();
+    const orders = (JSON.parse(res.body) as Ledger).orders;
+    assert.equal(Object.getOwnPropertyDescriptor(orders, "__proto__")?.value.total_minor, 999);
   });
 
   test("a ledger read while events are being applied is always one consistent snapshot", async () => {

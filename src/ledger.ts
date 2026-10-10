@@ -40,6 +40,13 @@ export interface LedgerDeadLetter {
   detail: string | null;
 }
 
+/** Everything that is waiting for an order.created we have not seen. */
+export interface LedgerUnmatched {
+  /** "delivered" and/or "cancelled" events stored for this order id. */
+  events: string[];
+  parked_refunds: string[];
+}
+
 export interface Ledger {
   orders: Record<string, LedgerOrder>;
   refunds: Record<string, LedgerRefund>;
@@ -47,6 +54,12 @@ export interface Ledger {
   dead_letter: LedgerDeadLetter[];
   duplicates_ignored: number;
   unknown_types_acked: number;
+  /**
+   * Extra field. An order with no order.created cannot be listed under `orders` (no currency, no total), but its
+   * delivery or cancellation and its parked refunds are stored. This makes them visible instead of silent.
+   * Empty once every order has arrived.
+   */
+  unmatched_order_events: Record<string, LedgerUnmatched>;
 }
 
 /** Plain rows as they come from the database. */
@@ -74,6 +87,7 @@ export interface LedgerRows {
 /**
  * Pure: rows in, contract shape out.
  * An order's status comes from its events: cancelled wins over delivered, delivered over created (Ana's choice).
+ * Objects are built with Object.fromEntries, not assignment: an order id such as "__proto__" must stay a key.
  */
 export function assembleLedger(rows: LedgerRows): Ledger {
   const cancelled = new Set<string>();
@@ -83,40 +97,56 @@ export function assembleLedger(rows: LedgerRows): Ledger {
     else if (e.kind === "delivered") delivered.add(e.order_id);
   }
 
-  const orders: Record<string, LedgerOrder> = {};
-  for (const o of rows.orders) {
-    orders[o.order_id] = {
-      status: cancelled.has(o.order_id) ? "cancelled" : delivered.has(o.order_id) ? "delivered" : "created",
-      currency: o.currency,
-      total_minor: Number(o.total_minor),
-      refunded_minor: Number(o.refunded_minor),
-    };
-  }
+  const orders: Record<string, LedgerOrder> = Object.fromEntries(
+    rows.orders.map((o) => [
+      o.order_id,
+      {
+        status: cancelled.has(o.order_id) ? "cancelled" : delivered.has(o.order_id) ? "delivered" : "created",
+        currency: o.currency,
+        total_minor: Number(o.total_minor),
+        refunded_minor: Number(o.refunded_minor),
+      } satisfies LedgerOrder,
+    ]),
+  );
 
-  const refunds: Record<string, LedgerRefund> = {};
-  for (const r of rows.refunds) {
-    refunds[r.refund_id] = {
-      order_id: r.order_id,
-      currency: r.currency,
-      amount_minor: Number(r.amount_minor),
-      decision: r.decision,
-      reason_code: r.reason_code,
-      decided_by: r.decided_by,
-      reason: r.reason,
-      note: r.note ?? null,
-    };
-  }
+  const refunds: Record<string, LedgerRefund> = Object.fromEntries(
+    rows.refunds.map((r) => [
+      r.refund_id,
+      {
+        order_id: r.order_id,
+        currency: r.currency,
+        amount_minor: Number(r.amount_minor),
+        decision: r.decision,
+        reason_code: r.reason_code,
+        decided_by: r.decided_by,
+        reason: r.reason,
+        note: r.note ?? null,
+      } satisfies LedgerRefund,
+    ]),
+  );
 
-  const messages: Record<string, LedgerMessage> = {};
-  for (const m of rows.messages) {
-    messages[m.message_id] = {
-      category: m.category,
-      sentiment: m.sentiment,
-      draft_reply: m.draft_reply,
-      flags: m.flags ?? [],
-      auto_reply_sent: m.auto_reply_sent,
-    };
-  }
+  const messages: Record<string, LedgerMessage> = Object.fromEntries(
+    rows.messages.map((m) => [
+      m.message_id,
+      { category: m.category, sentiment: m.sentiment, draft_reply: m.draft_reply, flags: m.flags ?? [], auto_reply_sent: m.auto_reply_sent } satisfies LedgerMessage,
+    ]),
+  );
+
+  // Facts and parked refunds for orders that have no order.created yet.
+  const seen = new Set(rows.orders.map((o) => o.order_id));
+  const waiting = new Map<string, { events: Set<string>; parked: string[] }>();
+  const entry = (orderId: string) => {
+    let e = waiting.get(orderId);
+    if (!e) waiting.set(orderId, (e = { events: new Set(), parked: [] }));
+    return e;
+  };
+  for (const e of rows.orderEvents) if (!seen.has(e.order_id)) entry(e.order_id).events.add(e.kind);
+  for (const r of rows.refunds) if (r.decision === "parked" && !seen.has(r.order_id)) entry(r.order_id).parked.push(r.refund_id);
+  const unmatched: Record<string, LedgerUnmatched> = Object.fromEntries(
+    [...waiting.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([orderId, w]) => [orderId, { events: [...w.events].sort(), parked_refunds: [...w.parked].sort() }]),
+  );
 
   return {
     orders,
@@ -125,6 +155,7 @@ export function assembleLedger(rows: LedgerRows): Ledger {
     dead_letter: rows.deadLetter.map((d) => ({ event_id: d.event_id, reason: d.reason, detail: d.detail ?? null })),
     duplicates_ignored: Number(rows.duplicatesIgnored),
     unknown_types_acked: Number(rows.unknownTypesAcked),
+    unmatched_order_events: unmatched,
   };
 }
 

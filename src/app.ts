@@ -1,10 +1,11 @@
 import Fastify from "fastify";
 import { applyEvent } from "./apply.js";
+import { approvalRoutes, decideByHuman, type ApprovalDeps } from "./approvals.js";
 import { getPool } from "./db.js";
 import { readLedger } from "./ledger.js";
 import { webhookRoutes, type WebhookDeps } from "./webhooks.js";
 
-export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"] } = {}) {
+export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"]; decide?: ApprovalDeps["decide"] } = {}) {
   // POST /webhooks/ must work as well as POST /webhooks: a sender that adds a slash must not get a 404.
   const app = Fastify({ logger: opts.logger ?? false, ignoreTrailingSlash: true });
 
@@ -31,6 +32,7 @@ export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"] 
   });
 
   app.register(webhookRoutes({ apply: opts.apply ?? applyEvent }));
+  app.register(approvalRoutes({ decide: opts.decide ?? decideByHuman }));
 
   return app;
 }

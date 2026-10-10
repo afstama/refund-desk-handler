@@ -3,7 +3,8 @@ import type pg from "pg";
 import { withTransaction } from "./db.js";
 import { recordDeadLetter } from "./deadLetter.js";
 import type { ParsedEvent } from "./events.js";
-import { decideRefund, type OrderState } from "./policy.js";
+import { loadOrderState, lockOrder } from "./orderState.js";
+import { decideRefund } from "./policy.js";
 
 export type ApplyStatus = "accepted" | "duplicate" | "unknown_type" | "dead_lettered";
 
@@ -16,33 +17,6 @@ export interface ApplyInput {
 
 /** A second, different event tries to create something we already have. First wins. */
 class Conflict extends Error {}
-
-/**
- * One order at a time. Everything that can change an order's balance or its refunds takes this lock first,
- * also when the order row does not exist yet: a refund being parked and the late order.created that should
- * decide it must not pass each other. Transaction-level, so it is safe behind Neon's pooler.
- */
-async function lockOrder(client: pg.PoolClient, orderId: string): Promise<void> {
-  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [orderId]);
-}
-
-/** The order as the policy needs it, with its row locked. null when no order.created was seen. */
-async function loadOrderState(client: pg.PoolClient, orderId: string): Promise<OrderState | null> {
-  const order = await client.query<{ currency: string; total_minor: number; refunded_minor: number }>(
-    "SELECT currency, total_minor, refunded_minor FROM orders WHERE order_id = $1 FOR UPDATE",
-    [orderId],
-  );
-  if (order.rowCount === 0) return null;
-  const facts = await client.query<{ kind: string; occurred_at: Date }>("SELECT kind, occurred_at FROM order_events WHERE order_id = $1", [orderId]);
-  const row = order.rows[0]!;
-  return {
-    currency: row.currency,
-    totalMinor: Number(row.total_minor),
-    refundedMinor: Number(row.refunded_minor),
-    deliveredAt: facts.rows.find((f) => f.kind === "delivered")?.occurred_at ?? null,
-    cancelledAt: facts.rows.find((f) => f.kind === "cancelled")?.occurred_at ?? null,
-  };
-}
 
 /** The late order has arrived: decide the refunds that were waiting for it, in the order they happened. */
 async function decideParkedRefunds(client: pg.PoolClient, orderId: string): Promise<void> {
