@@ -1,0 +1,597 @@
+{
+  "refunds": {
+    "R-0001": {
+      "order_id": "O-1029",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0002": {
+      "order_id": "O-1030",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0003": {
+      "order_id": "O-1031",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0004": {
+      "order_id": "O-1032",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0005": {
+      "order_id": "O-1033",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0006": {
+      "order_id": "O-1034",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0007": {
+      "order_id": "O-1035",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0008": {
+      "order_id": "O-1036",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0009": {
+      "order_id": "O-1037",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0010": {
+      "order_id": "O-1038",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0011": {
+      "order_id": "O-1039",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0012": {
+      "order_id": "O-1040",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0013": {
+      "order_id": "O-1041",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0014": {
+      "order_id": "O-1042",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0015": {
+      "order_id": "O-1043",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0016": {
+      "order_id": "O-1044",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0017": {
+      "order_id": "O-1045",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0018": {
+      "order_id": "O-1046",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0019": {
+      "order_id": "O-1047",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0020": {
+      "order_id": "O-1048",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0021": {
+      "order_id": "O-1049",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0022": {
+      "order_id": "O-1050",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0023": {
+      "order_id": "O-1051",
+      "decision": "queued",
+      "reason_code": "REASON_NOT_ELIGIBLE",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0024": {
+      "order_id": "O-1052",
+      "decision": "queued",
+      "reason_code": "REASON_NOT_ELIGIBLE",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0025": {
+      "order_id": "O-1053",
+      "decision": "queued",
+      "reason_code": "REASON_NOT_ELIGIBLE",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0026": {
+      "order_id": "O-1054",
+      "decision": "queued",
+      "reason_code": "REASON_NOT_ELIGIBLE",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0027": {
+      "order_id": "O-1055",
+      "decision": "queued",
+      "reason_code": "REASON_NOT_ELIGIBLE",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0028": {
+      "order_id": "O-1056",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0029": {
+      "order_id": "O-1057",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0030": {
+      "order_id": "O-1058",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0031": {
+      "order_id": "O-1059",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0032": {
+      "order_id": "O-1060",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0033": {
+      "order_id": "O-1061",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0034": {
+      "order_id": "O-1062",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0035": {
+      "order_id": "O-1063",
+      "decision": "queued",
+      "reason_code": "NOT_DELIVERED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0036": {
+      "order_id": "O-1064",
+      "decision": "queued",
+      "reason_code": "NOT_DELIVERED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0037": {
+      "order_id": "O-1065",
+      "decision": "queued",
+      "reason_code": "NOT_DELIVERED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0038": {
+      "order_id": "O-1066",
+      "decision": "queued",
+      "reason_code": "NOT_DELIVERED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0039": {
+      "order_id": "O-1067",
+      "decision": "queued",
+      "reason_code": "NOT_DELIVERED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0040": {
+      "order_id": "O-1068",
+      "decision": "rejected",
+      "reason_code": "ORDER_CANCELLED",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0041": {
+      "order_id": "O-1069",
+      "decision": "rejected",
+      "reason_code": "ORDER_CANCELLED",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0042": {
+      "order_id": "O-1070",
+      "decision": "rejected",
+      "reason_code": "ORDER_CANCELLED",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0043": {
+      "order_id": "O-1071",
+      "decision": "rejected",
+      "reason_code": "ORDER_CANCELLED",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0044": {
+      "order_id": "O-1072",
+      "decision": "rejected",
+      "reason_code": "EXCEEDS_BALANCE",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0045": {
+      "order_id": "O-1073",
+      "decision": "rejected",
+      "reason_code": "EXCEEDS_BALANCE",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0046": {
+      "order_id": "O-1074",
+      "decision": "rejected",
+      "reason_code": "EXCEEDS_BALANCE",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0047": {
+      "order_id": "O-1087",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0048": {
+      "order_id": "O-1087",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0049": {
+      "order_id": "O-1087",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0050": {
+      "order_id": "O-1088",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0051": {
+      "order_id": "O-1088",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0052": {
+      "order_id": "O-1089",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0053": {
+      "order_id": "O-1089",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0054": {
+      "order_id": "O-1089",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0055": {
+      "order_id": "O-1090",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0056": {
+      "order_id": "O-1091",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0057": {
+      "order_id": "O-1091",
+      "decision": "rejected",
+      "reason_code": "EXCEEDS_BALANCE",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0058": {
+      "order_id": "O-1092",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0059": {
+      "order_id": "O-1093",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0060": {
+      "order_id": "O-1094",
+      "decision": "queued",
+      "reason_code": "WINDOW_EXPIRED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0061": {
+      "order_id": "O-1095",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0062": {
+      "order_id": "O-1096",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0063": {
+      "order_id": "O-1097",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0064": {
+      "order_id": "O-1098",
+      "decision": "queued",
+      "reason_code": "NOT_DELIVERED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0069": {
+      "order_id": "O-1105",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0070": {
+      "order_id": "O-1106",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0071": {
+      "order_id": "O-1107",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0072": {
+      "order_id": "O-1108",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0073": {
+      "order_id": "O-1109",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0074": {
+      "order_id": "O-1110",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0075": {
+      "order_id": "O-1111",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": "currency_mismatch"
+    },
+    "R-0076": {
+      "order_id": "O-1112",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0077": {
+      "order_id": "O-1113",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0078": {
+      "order_id": "O-1114",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0079": {
+      "order_id": "O-1115",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0081": {
+      "order_id": "O-1117",
+      "decision": "auto_approved",
+      "reason_code": "AUTO_OK",
+      "decided_by": "policy",
+      "note": null
+    },
+    "R-0084": {
+      "order_id": "O-1120",
+      "decision": "queued",
+      "reason_code": "NOT_DELIVERED",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0085": {
+      "order_id": "O-1121",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0086": {
+      "order_id": "O-1122",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    },
+    "R-0087": {
+      "order_id": "O-1122",
+      "decision": "queued",
+      "reason_code": "OVER_THRESHOLD",
+      "decided_by": "none",
+      "note": null
+    }
+  },
+  "refunded_minor": {
+    "O-1029": 2000,
+    "O-1030": 1552,
+    "O-1031": 1959,
+    "O-1032": 967,
+    "O-1033": 872,
+    "O-1034": 383,
+    "O-1035": 1022,
+    "O-1036": 596,
+    "O-1037": 553,
+    "O-1038": 312,
+    "O-1039": 320,
+    "O-1040": 1971,
+    "O-1041": 1378,
+    "O-1042": 748,
+    "O-1087": 4391,
+    "O-1088": 3687,
+    "O-1089": 4598,
+    "O-1090": 803,
+    "O-1091": 1500,
+    "O-1092": 1442,
+    "O-1093": 1833,
+    "O-1095": 1741,
+    "O-1096": 974,
+    "O-1105": 2100,
+    "O-1107": 1500,
+    "O-1108": 1200,
+    "O-1112": 1940,
+    "O-1113": 940,
+    "O-1114": 1840,
+    "O-1115": 1140,
+    "O-1117": 1940
+  }
+}

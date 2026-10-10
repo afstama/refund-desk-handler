@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, before, describe, test } from "node:test";
 import { buildApp } from "../src/app.js";
 import { closePool, getPool } from "../src/db.js";
@@ -28,6 +29,9 @@ async function snapshot() {
     messages: await q("messages"),
     deadLetter: await q("dead_letter"),
     redeliveries: await one<number>("SELECT COALESCE(sum(redeliveries), 0)::int FROM events"),
+    refunds: await q("refunds"),
+    refundedMinor: await one<number>("SELECT COALESCE(sum(refunded_minor), 0)::bigint FROM orders"),
+    decisions: await one<string>("SELECT COALESCE(string_agg(refund_id || ':' || decision || ':' || reason_code, ',' ORDER BY refund_id), '') FROM refunds"),
   };
 }
 
@@ -114,8 +118,75 @@ describe("full replay of events.ndjson", () => {
   });
 
   test("order totals are whole minor units", async () => {
-    assert.equal(await one("SELECT total_minor FROM orders WHERE order_id = 'O-1112'"), "3730"); // 37.30 EUR, bigint comes back as text
+    assert.equal(await one("SELECT total_minor FROM orders WHERE order_id = 'O-1112'"), 3730); // 37.30 EUR, a number, not text
     assert.equal(await one("SELECT count(*)::int FROM orders WHERE total_minor <= 0"), 0);
+  });
+
+  test("every refund decision equals the independent derivation (test/fixtures/expected-refunds.json)", async () => {
+    const expected = JSON.parse(readFileSync(new URL("./fixtures/expected-refunds.json", import.meta.url), "utf8")) as {
+      refunds: Record<string, { order_id: string; decision: string; reason_code: string; decided_by: string; note: string | null }>;
+      refunded_minor: Record<string, number>;
+    };
+    const rows = (await getPool().query("SELECT refund_id, order_id, decision, reason_code, decided_by, note FROM refunds ORDER BY refund_id")).rows;
+    assert.equal(rows.length, 80);
+    const actual = Object.fromEntries(
+      rows.map((r) => [r.refund_id, { order_id: r.order_id, decision: r.decision, reason_code: r.reason_code, decided_by: r.decided_by, note: r.note }]),
+    );
+    assert.deepEqual(actual, expected.refunds);
+
+    const refunded = Object.fromEntries((await getPool().query("SELECT order_id, refunded_minor FROM orders WHERE refunded_minor > 0 ORDER BY order_id")).rows.map((r) => [r.order_id, r.refunded_minor]));
+    assert.deepEqual(refunded, expected.refunded_minor);
+  });
+
+  test("the totals: 36 approved, 36 queued, 8 rejected, none parked, 48202 minor units refunded", async () => {
+    const tally = Object.fromEntries((await getPool().query("SELECT decision, count(*)::int AS n FROM refunds GROUP BY decision")).rows.map((r) => [r.decision, r.n]));
+    assert.deepEqual(tally, { auto_approved: 36, queued: 36, rejected: 8 });
+    assert.equal(await one("SELECT COALESCE(sum(refunded_minor), 0)::bigint FROM orders"), 48202);
+  });
+
+  test("an order is never refunded for more than it is worth, and refunded_minor is exactly its approved refunds", async () => {
+    assert.equal(await one("SELECT count(*)::int FROM orders WHERE refunded_minor > total_minor"), 0);
+    assert.equal(
+      await one(`SELECT count(*)::int FROM orders o WHERE o.refunded_minor <>
+                 COALESCE((SELECT sum(r.amount_minor) FROM refunds r WHERE r.order_id = o.order_id AND r.decision IN ('auto_approved', 'approved')), 0)`),
+      0,
+    );
+  });
+
+  test("named cases from EDGE_CASES.md", async () => {
+    const row = async (id: string) => (await getPool().query("SELECT order_id, decision, reason_code, decided_by FROM refunds WHERE refund_id = $1", [id])).rows[0];
+    assert.deepEqual(await row("R-0058"), { order_id: "O-1092", decision: "auto_approved", reason_code: "AUTO_OK", decided_by: "policy" }); // 29 d 23 h
+    assert.deepEqual(await row("R-0059"), { order_id: "O-1093", decision: "auto_approved", reason_code: "AUTO_OK", decided_by: "policy" }); // exactly 30 d
+    assert.deepEqual(await row("R-0060"), { order_id: "O-1094", decision: "queued", reason_code: "WINDOW_EXPIRED", decided_by: "none" }); // 30 d 1 h
+    assert.deepEqual(await row("R-0057"), { order_id: "O-1091", decision: "rejected", reason_code: "EXCEEDS_BALANCE", decided_by: "policy" });
+    assert.deepEqual(await row("R-0076"), { order_id: "O-1112", decision: "auto_approved", reason_code: "AUTO_OK", decided_by: "policy" }); // "  O-1112 "
+    assert.equal(await one("SELECT refunded_minor FROM orders WHERE order_id = 'O-1112'"), 1940);
+    assert.equal(await one("SELECT refunded_minor FROM orders WHERE order_id = 'O-1087'"), 4391); // exactly its total
+    for (const id of ["R-0040", "R-0041", "R-0042", "R-0043"]) assert.equal((await row(id)).reason_code, "ORDER_CANCELLED", id);
+    for (const id of ["R-0069", "R-0071", "R-0072"]) assert.equal((await row(id)).reason_code, "AUTO_OK", id);
+    for (const id of ["R-0070", "R-0073", "R-0074"]) assert.equal((await row(id)).reason_code, "OVER_THRESHOLD", id);
+    assert.deepEqual((await getPool().query("SELECT decision, reason_code, note FROM refunds WHERE refund_id = 'R-0075'")).rows[0], {
+      decision: "queued",
+      reason_code: "OVER_THRESHOLD",
+      note: "currency_mismatch",
+    });
+    // the four that were parked when they arrived
+    assert.deepEqual(
+      (await getPool().query("SELECT refund_id, decision, reason_code FROM refunds WHERE refund_id IN ('R-0061','R-0062','R-0063','R-0064') ORDER BY refund_id")).rows,
+      [
+        { refund_id: "R-0061", decision: "auto_approved", reason_code: "AUTO_OK" },
+        { refund_id: "R-0062", decision: "auto_approved", reason_code: "AUTO_OK" },
+        { refund_id: "R-0063", decision: "queued", reason_code: "OVER_THRESHOLD" },
+        { refund_id: "R-0064", decision: "queued", reason_code: "NOT_DELIVERED" },
+      ],
+    );
+  });
+
+  test("refused and forged refunds leave no refund row", async () => {
+    const ids = ["R-0065", "R-0066", "R-0067", "R-0068", "R-0080", "R-0082", "R-0083"]; // no currency, forged x3, unreadable amounts x3
+    assert.equal(await one("SELECT count(*)::int FROM refunds WHERE refund_id = ANY($1)", [ids]), 0);
+    // sent twice, decided once: R-0002 and R-0003
+    assert.equal(await one("SELECT count(*)::int FROM refunds WHERE refund_id IN ('R-0002', 'R-0003')"), 2);
   });
 
   test("replaying everything again changes nothing except the duplicate count", async () => {
@@ -140,7 +211,7 @@ describe("conflicts, races, outages and bad requests", () => {
     assert.deepEqual((await deliver(app, "evt_t1", first)).json, { status: "accepted" });
 
     assert.deepEqual((await deliver(app, "evt_t1", changed)).json, { status: "dead_lettered" });
-    assert.equal(await one("SELECT total_minor FROM orders WHERE order_id = 'O-T1'"), "1000");
+    assert.equal(await one("SELECT total_minor FROM orders WHERE order_id = 'O-T1'"), 1000);
     assert.equal(await one("SELECT body FROM events WHERE event_id = 'evt_t1'"), first);
     assert.equal(await one("SELECT detail FROM dead_letter WHERE event_id = 'evt_t1'"), "same event id with a different body");
 
@@ -157,7 +228,7 @@ describe("conflicts, races, outages and bad requests", () => {
     await resetDb();
     await deliver(app, "evt_t2", orderCreated("evt_t2", "O-T2", "10.00"));
     assert.deepEqual((await deliver(app, "evt_t3", orderCreated("evt_t3", "O-T2", "55.00"))).json, { status: "dead_lettered" });
-    assert.equal(await one("SELECT total_minor FROM orders WHERE order_id = 'O-T2'"), "1000");
+    assert.equal(await one("SELECT total_minor FROM orders WHERE order_id = 'O-T2'"), 1000);
     assert.equal(await one("SELECT count(*)::int FROM events WHERE event_id = 'evt_t3'"), 0);
     assert.equal(await one("SELECT detail FROM dead_letter WHERE event_id = 'evt_t3'"), "order already exists");
   });
@@ -302,5 +373,120 @@ describe("conflicts, races, outages and bad requests", () => {
     const res = await injectSender(app)(big);
     assert.equal(res.status, 200);
     assert.equal(await one("SELECT length(text) > 100000 FROM messages WHERE message_id = 'M-0063'"), true);
+  });
+});
+
+describe("refund decisions inside the pipeline", () => {
+  const created = (id: string, orderId: string, total: string, at: string, currency = "EUR") =>
+    event(id, "order.created", { order_id: orderId, customer_email: "a@example.com", total, currency }, at);
+  const delivered = (id: string, orderId: string, at: string) => event(id, "shipment.delivered", { order_id: orderId }, at);
+  const cancelled = (id: string, orderId: string, at: string) => event(id, "order.cancelled", { order_id: orderId }, at);
+  const refundEvent = (id: string, refundId: string, orderId: string, amount: string, at: string, opts: { currency?: string; reason?: string } = {}) =>
+    event(id, "refund.requested", { refund_id: refundId, order_id: orderId, amount, currency: opts.currency ?? "EUR", reason: opts.reason ?? "damaged" }, at);
+  const send = (id: string, body: string) => deliver(app, id, body);
+  const refundRow = async (refundId: string) =>
+    (await getPool().query("SELECT decision, reason_code, decided_by, note, decided_at IS NOT NULL AS decided FROM refunds WHERE refund_id = $1", [refundId])).rows[0];
+  const refunded = (orderId: string) => one<number>("SELECT refunded_minor FROM orders WHERE order_id = $1", [orderId]);
+
+  test("a refund that arrives before its order is parked, then decided when the order arrives", async () => {
+    await resetDb();
+    await send("e1", delivered("e1", "O-P1", "2026-04-08T10:00:00Z"));
+    await send("e2", refundEvent("e2", "R-P1", "O-P1", "10.00", "2026-04-10T10:00:00Z"));
+    assert.deepEqual(await refundRow("R-P1"), { decision: "parked", reason_code: "ORDER_UNKNOWN", decided_by: "none", note: null, decided: false });
+
+    await send("e3", created("e3", "O-P1", "50.00", "2026-04-05T10:00:00Z"));
+    assert.deepEqual(await refundRow("R-P1"), { decision: "auto_approved", reason_code: "AUTO_OK", decided_by: "policy", note: null, decided: true });
+    assert.equal(await refunded("O-P1"), 1000);
+  });
+
+  test("parked refunds are decided in the order they happened, not the order they arrived", async () => {
+    await resetDb();
+    await send("e1", delivered("e1", "O-P2", "2026-04-08T10:00:00Z"));
+    // B happened later (12 April) but arrives first. Order total 30.00: A 20.00 then B 15.00 cannot both fit.
+    await send("e2", refundEvent("e2", "R-P2B", "O-P2", "15.00", "2026-04-12T10:00:00Z"));
+    await send("e3", refundEvent("e3", "R-P2A", "O-P2", "20.00", "2026-04-10T10:00:00Z"));
+    await send("e4", created("e4", "O-P2", "30.00", "2026-04-05T10:00:00Z"));
+
+    assert.equal((await refundRow("R-P2A")).reason_code, "AUTO_OK");
+    assert.equal((await refundRow("R-P2B")).reason_code, "EXCEEDS_BALANCE");
+    assert.equal(await refunded("O-P2"), 2000);
+  });
+
+  test("simultaneous refunds on one order cannot pay more than the order is worth", async () => {
+    await resetDb();
+    await send("e1", created("e1", "O-P3", "25.00", "2026-04-05T10:00:00Z"));
+    await send("e2", delivered("e2", "O-P3", "2026-04-08T10:00:00Z"));
+    const ids = ["A", "B", "C", "D"];
+    await Promise.all(ids.map((x, i) => send(`r${x}`, refundEvent(`r${x}`, `R-P3${x}`, "O-P3", "10.00", `2026-04-1${i}T10:00:00Z`))));
+
+    const rows = (await getPool().query("SELECT decision, reason_code FROM refunds ORDER BY refund_id")).rows;
+    assert.equal(rows.filter((r) => r.decision === "auto_approved").length, 2);
+    assert.equal(rows.filter((r) => r.reason_code === "EXCEEDS_BALANCE").length, 2);
+    assert.equal(await refunded("O-P3"), 2000);
+  });
+
+  test("a refund and its late order.created at the same moment: decided once, never left parked", async () => {
+    await resetDb();
+    for (let i = 1; i <= 6; i++) {
+      const order = `O-R${i}`;
+      await send(`d${i}`, delivered(`d${i}`, order, "2026-04-08T10:00:00Z"));
+      await Promise.all([
+        send(`f${i}`, refundEvent(`f${i}`, `R-R${i}`, order, "10.00", "2026-04-10T10:00:00Z")),
+        send(`c${i}`, created(`c${i}`, order, "50.00", "2026-04-05T10:00:00Z")),
+      ]);
+      assert.equal((await refundRow(`R-R${i}`)).decision, "auto_approved", `round ${i}`);
+      assert.equal(await refunded(order), 1000, `round ${i}`);
+    }
+  });
+
+  test("a second refund event with an existing refund_id is refused: first wins", async () => {
+    await resetDb();
+    await send("e1", created("e1", "O-P4", "50.00", "2026-04-05T10:00:00Z"));
+    await send("e2", delivered("e2", "O-P4", "2026-04-08T10:00:00Z"));
+    assert.equal((await send("e3", refundEvent("e3", "R-P4", "O-P4", "10.00", "2026-04-10T10:00:00Z"))).json.status, "accepted");
+    assert.equal((await send("e4", refundEvent("e4", "R-P4", "O-P4", "40.00", "2026-04-11T10:00:00Z"))).json.status, "dead_lettered");
+
+    assert.equal(await one("SELECT amount_minor FROM refunds WHERE refund_id = 'R-P4'"), 1000);
+    assert.equal(await refunded("O-P4"), 1000);
+    assert.equal(await one("SELECT detail FROM dead_letter WHERE event_id = 'e4'"), "refund already exists");
+    assert.equal(await one("SELECT count(*)::int FROM events WHERE event_id = 'e4'"), 0);
+  });
+
+  test("a queued refund is not decided again when the order is delivered or cancelled later", async () => {
+    await resetDb();
+    await send("e1", created("e1", "O-P5", "50.00", "2026-04-05T10:00:00Z"));
+    await send("e2", refundEvent("e2", "R-P5", "O-P5", "10.00", "2026-04-07T10:00:00Z", { reason: "not_received" }));
+    assert.equal((await refundRow("R-P5")).reason_code, "NOT_DELIVERED");
+
+    await send("e3", delivered("e3", "O-P5", "2026-04-08T10:00:00Z"));
+    assert.deepEqual(await refundRow("R-P5"), { decision: "queued", reason_code: "NOT_DELIVERED", decided_by: "none", note: null, decided: false });
+    await send("e4", cancelled("e4", "O-P5", "2026-04-09T10:00:00Z"));
+    assert.equal((await refundRow("R-P5")).decision, "queued");
+    assert.equal(await refunded("O-P5"), 0);
+  });
+
+  test("currencies: a mismatch goes to a human, a cancelled order still rejects, an unknown currency goes to a human", async () => {
+    await resetDb();
+    await send("e1", created("e1", "O-P6", "65.00", "2026-04-05T10:00:00Z", "USD"));
+    await send("e2", delivered("e2", "O-P6", "2026-04-08T10:00:00Z"));
+    await send("e3", refundEvent("e3", "R-P6", "O-P6", "12.00", "2026-04-11T10:00:00Z", { currency: "EUR" })); // R-0075 in miniature
+    assert.deepEqual(await refundRow("R-P6"), { decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", note: "currency_mismatch", decided: false });
+
+    await send("e4", cancelled("e4", "O-P6", "2026-04-12T10:00:00Z"));
+    await send("e5", refundEvent("e5", "R-P6B", "O-P6", "5.00", "2026-04-13T10:00:00Z", { currency: "EUR" }));
+    assert.equal((await refundRow("R-P6B")).reason_code, "ORDER_CANCELLED");
+
+    await send("e6", created("e6", "O-P7", "10000", "2026-04-05T10:00:00Z", "JPY"));
+    await send("e7", delivered("e7", "O-P7", "2026-04-08T10:00:00Z"));
+    await send("e8", refundEvent("e8", "R-P7", "O-P7", "500", "2026-04-10T10:00:00Z", { currency: "JPY" }));
+    assert.equal((await refundRow("R-P7")).note, "unsupported_currency");
+    assert.equal(await refunded("O-P6"), 0);
+    assert.equal(await refunded("O-P7"), 0);
+  });
+
+  test("the database refuses to refund an order for more than its total, even if the code were wrong", async () => {
+    await resetDb();
+    await send("e1", created("e1", "O-P8", "10.00", "2026-04-05T10:00:00Z"));
+    await assert.rejects(getPool().query("UPDATE orders SET refunded_minor = 1001 WHERE order_id = 'O-P8'"), (err) => (err as { code?: string }).code === "23514");
   });
 });

@@ -1,6 +1,10 @@
 import pg from "pg";
 import { getConfig } from "./config.js";
 
+// bigint (type 20) comes back from pg as text. Every money column is a whole number of minor units far below
+// 2^53 (amounts are capped on the way in), so a JS number is exact and the ledger can return integers.
+pg.types.setTypeParser(20, (value: string) => Number(value));
+
 let pool: pg.Pool | undefined;
 
 export function getPool(): pg.Pool {
