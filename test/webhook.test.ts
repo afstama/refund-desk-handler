@@ -148,7 +148,7 @@ describe("full replay of events.ndjson", () => {
     assert.equal(await one("SELECT count(*)::int FROM orders WHERE refunded_minor > total_minor"), 0);
     assert.equal(
       await one(`SELECT count(*)::int FROM orders o WHERE o.refunded_minor <>
-                 COALESCE((SELECT sum(r.amount_minor) FROM refunds r WHERE r.order_id = o.order_id AND r.decision IN ('auto_approved', 'approved')), 0)`),
+                 COALESCE((SELECT sum(r.charged_minor) FROM refunds r WHERE r.order_id = o.order_id AND r.decision IN ('auto_approved', 'approved')), 0)`),
       0,
     );
   });

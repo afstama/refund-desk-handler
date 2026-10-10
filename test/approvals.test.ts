@@ -107,8 +107,9 @@ describe("POST /refunds/:id/approve and /reject", () => {
       decided_by: "human",
       reason: "damaged",
       note: null,
+      charged_minor: 3500,
     });
-    assert.deepEqual(r.json.order, { order_id: "O-B", total_minor: 6000, refunded_minor: 3500, remaining_minor: 2500 });
+    assert.deepEqual(r.json.order, { order_id: "O-B", currency: "EUR", total_minor: 6000, refunded_minor: 3500, remaining_minor: 2500 });
     assert.equal(await refunded("O-B"), 3500);
     assert.equal((await refundRow("R-BA")).decided, true);
 
@@ -197,17 +198,87 @@ describe("POST /refunds/:id/approve and /reject", () => {
     assert.equal((await reject("R-G")).status, 200);
   });
 
-  test("a refund in another currency than its order cannot be approved yet (R-0075): 409 currency_mismatch, reject works", async () => {
+  test("a refund in another currency than its order may be approved: it is converted at the fixed rates (R-0075)", async () => {
     await resetDb();
     await send("h1", created("h1", "O-H", "65.00", "USD"));
     await send("h2", delivered("h2", "O-H"));
     await send("h3", refundEvent("h3", "R-H", "O-H", "12.00", { currency: "EUR" }));
     assert.equal((await refundRow("R-H")).note, "currency_mismatch");
+
     const a = await approve("R-H");
+    assert.equal(a.status, 200);
+    // 12.00 EUR / 0.92 = 13.04 USD, rounded half up once: that is what counts against the 65.00 USD order
+    assert.equal(a.json.refund.amount_minor, 1200);
+    assert.equal(a.json.refund.currency, "EUR");
+    assert.equal(a.json.refund.charged_minor, 1304);
+    assert.deepEqual(a.json.order, { order_id: "O-H", currency: "USD", total_minor: 6500, refunded_minor: 1304, remaining_minor: 5196 });
+    assert.equal(await refunded("O-H"), 1304);
+    assert.equal(await one("SELECT charged_minor FROM refunds WHERE refund_id = 'R-H'"), 1304);
+
+    // the ledger shows the same, and refunded_minor is the sum of charged_minor
+    const ledger = (await app.inject({ method: "GET", url: "/ledger" })).json() as Ledger;
+    assert.equal(ledger.refunds["R-H"]!.charged_minor, 1304);
+    assert.equal(ledger.refunds["R-H"]!.amount_minor, 1200);
+    assert.equal(ledger.orders["O-H"]!.refunded_minor, 1304);
+  });
+
+  test("a GBP refund on a EUR order is converted the other way: 17.50 GBP at 1.17 is 20.48 EUR", async () => {
+    await resetDb();
+    await send("m1", created("m1", "O-M", "100.00", "EUR"));
+    await send("m2", delivered("m2", "O-M"));
+    await send("m3", refundEvent("m3", "R-M", "O-M", "17.50", { currency: "GBP" }));
+    const a = await approve("R-M");
+    assert.equal(a.status, 200);
+    assert.equal(a.json.refund.charged_minor, 2048); // 20.475 rounds half up
+    assert.equal(await refunded("O-M"), 2048);
+  });
+
+  test("the converted amount is what is checked against the balance: it can fail to fit and then stays queued", async () => {
+    await resetDb();
+    // 12.00 is less than 12.50, so the raw number would fit. 12.00 EUR is 13.04 USD, which does not.
+    await send("n1", created("n1", "O-N", "12.50", "USD"));
+    await send("n2", delivered("n2", "O-N"));
+    await send("n3", refundEvent("n3", "R-N", "O-N", "12.00", { currency: "EUR" }));
+    const a = await approve("R-N");
     assert.equal(a.status, 409);
-    assert.equal(a.json.error, "currency_mismatch");
-    assert.equal(await refunded("O-H"), 0);
-    assert.equal((await reject("R-H")).status, 200);
+    assert.equal(a.json.error, "exceeds_balance");
+    assert.equal(a.json.remaining_minor, 1250);
+    assert.equal(a.json.remaining_currency, "USD");
+    assert.equal((await refundRow("R-N")).decision, "queued");
+    assert.equal(await refunded("O-N"), 0);
+    assert.equal((await reject("R-N")).status, 200);
+  });
+
+  test("a currency without a fixed rate cannot be converted: 409 no_exchange_rate, and reject works", async () => {
+    await resetDb();
+    await send("o1", created("o1", "O-O", "65.00", "USD"));
+    await send("o2", delivered("o2", "O-O"));
+    await send("o3", refundEvent("o3", "R-O", "O-O", "12.00", { currency: "CHF" }));
+    const a = await approve("R-O");
+    assert.equal(a.status, 409);
+    assert.equal(a.json.error, "no_exchange_rate");
+    assert.equal(await refunded("O-O"), 0);
+    assert.equal((await reject("R-O")).status, 200);
+  });
+
+  test("an automatic approval records what it counted too: charged_minor equals the amount", async () => {
+    await resetDb();
+    await send("p1", created("p1", "O-PA", "50.00"));
+    await send("p2", delivered("p2", "O-PA"));
+    await send("p3", refundEvent("p3", "R-PA", "O-PA", "10.00"));
+    assert.equal(await one("SELECT charged_minor FROM refunds WHERE refund_id = 'R-PA'"), 1000);
+    assert.equal(await one("SELECT count(*)::int FROM refunds WHERE charged_minor IS NOT NULL AND decision NOT IN ('auto_approved', 'approved')"), 0);
+  });
+
+  test("the database refuses an approved refund without charged_minor, and a queued one with it", async () => {
+    await resetDb();
+    await send("q1", created("q1", "O-Q", "50.00"));
+    await send("q2", delivered("q2", "O-Q"));
+    await send("q3", refundEvent("q3", "R-Q", "O-Q", "35.00"));
+    const bad = (sql: string) => assert.rejects(getPool().query(sql), (err) => (err as { code?: string }).code === "23514");
+    await bad("UPDATE refunds SET decision = 'approved', reason_code = 'HUMAN_APPROVED', decided_by = 'human' WHERE refund_id = 'R-Q'");
+    await bad("UPDATE refunds SET charged_minor = 100 WHERE refund_id = 'R-Q'");
+    await bad("UPDATE refunds SET charged_minor = 0, decision = 'approved', reason_code = 'HUMAN_APPROVED', decided_by = 'human' WHERE refund_id = 'R-Q'");
   });
 
   test("a queued refund on an order that was never delivered may be approved (POLICY.md section 4 and 7)", async () => {

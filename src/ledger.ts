@@ -1,5 +1,6 @@
 import type pg from "pg";
 import { getPool } from "./db.js";
+import { convertMinor, toEurMinor } from "./policy.js";
 
 // The shape of GET /ledger from CONTRACT.md. Money is whole minor units in the record's own currency.
 // Public and unauthenticated, as the contract has it: never put an email address or message text in here.
@@ -23,6 +24,11 @@ export interface LedgerRefund {
   // Extra fields (Marko allows them): what the customer gave as the reason, and why a human has to look.
   reason: string;
   note: string | null;
+  /**
+   * Extra field: what an approval counted against the order, in the order's currency (null until approved).
+   * It is amount_minor when the currencies agree. orders.refunded_minor is the sum of it over approved refunds.
+   */
+  charged_minor: number | null;
 }
 
 export interface LedgerMessage {
@@ -76,6 +82,7 @@ export interface LedgerRows {
     decided_by: string;
     reason: string;
     note: string | null;
+    charged_minor: number | null;
   }[];
   /** Only messages whose triage is done. A message still being triaged is not listed yet. */
   messages: { message_id: string; category: string; sentiment: string; draft_reply: string; flags: string[]; auto_reply_sent: boolean }[];
@@ -121,6 +128,7 @@ export function assembleLedger(rows: LedgerRows): Ledger {
         decided_by: r.decided_by,
         reason: r.reason,
         note: r.note ?? null,
+        charged_minor: r.charged_minor === null || r.charged_minor === undefined ? null : Number(r.charged_minor),
       } satisfies LedgerRefund,
     ]),
   );
@@ -159,10 +167,25 @@ export function assembleLedger(rows: LedgerRows): Ledger {
   };
 }
 
-/** What the approval screen needs: the queued refunds and the orders they belong to. In the ledger's own shape. */
+/** A queued refund as the screen gets it: the ledger's fields plus its value in EUR and in the order's currency. */
+export interface QueueRefund extends LedgerRefund {
+  /** The refund in EUR at the fixed rates. null when its currency has no rate. */
+  eur_minor: number | null;
+  /** What approving it would count against the order, in the order's currency. null when there is no rate. */
+  in_order_currency_minor: number | null;
+}
+
+export interface QueueOrder extends LedgerOrder {
+  /** The order's numbers in EUR at the fixed rates. null when its currency has no rate. */
+  total_eur_minor: number | null;
+  refunded_eur_minor: number | null;
+  remaining_eur_minor: number | null;
+}
+
+/** What the approval screen needs: the queued refunds and the orders they belong to, in the ledger's shape. */
 export interface Queue {
-  orders: Record<string, LedgerOrder>;
-  refunds: Record<string, LedgerRefund>;
+  orders: Record<string, QueueOrder>;
+  refunds: Record<string, QueueRefund>;
 }
 
 /**
@@ -174,7 +197,7 @@ export async function readQueue(pool: pg.Pool = getPool()): Promise<Queue> {
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     const refunds = await client.query<LedgerRows["refunds"][number]>(
-      `SELECT refund_id, order_id, currency, amount_minor, decision, reason_code, decided_by, reason, note
+      `SELECT refund_id, order_id, currency, amount_minor, decision, reason_code, decided_by, reason, note, charged_minor
        FROM refunds WHERE decision = 'queued' ORDER BY refund_id`,
     );
     const orderIds = [...new Set(refunds.rows.map((r) => r.order_id))];
@@ -193,7 +216,33 @@ export async function readQueue(pool: pg.Pool = getPool()): Promise<Queue> {
       duplicatesIgnored: 0,
       unknownTypesAcked: 0,
     });
-    return { orders: shaped.orders, refunds: shaped.refunds };
+    // Everything in EUR as well, computed here with the same integer rules as the policy, so that the screen
+    // does no arithmetic of its own. Only a currency without a fixed rate has no EUR value.
+    const queueOrders: Record<string, QueueOrder> = Object.fromEntries(
+      Object.entries(shaped.orders).map(([id, o]) => [
+        id,
+        {
+          ...o,
+          total_eur_minor: toEurMinor(o.total_minor, o.currency),
+          refunded_eur_minor: toEurMinor(o.refunded_minor, o.currency),
+          remaining_eur_minor: toEurMinor(o.total_minor - o.refunded_minor, o.currency),
+        },
+      ]),
+    );
+    const queueRefunds: Record<string, QueueRefund> = Object.fromEntries(
+      Object.entries(shaped.refunds).map(([id, r]) => {
+        const orderCurrency = Object.hasOwn(shaped.orders, r.order_id) ? shaped.orders[r.order_id]!.currency : null;
+        return [
+          id,
+          {
+            ...r,
+            eur_minor: toEurMinor(r.amount_minor, r.currency),
+            in_order_currency_minor: orderCurrency === null ? null : convertMinor(r.amount_minor, r.currency, orderCurrency),
+          },
+        ];
+      }),
+    );
+    return { orders: queueOrders, refunds: queueRefunds };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
@@ -215,7 +264,7 @@ export async function readLedger(pool: pg.Pool = getPool()): Promise<Ledger> {
     );
     const orderEvents = await client.query<LedgerRows["orderEvents"][number]>("SELECT order_id, kind FROM order_events");
     const refunds = await client.query<LedgerRows["refunds"][number]>(
-      `SELECT refund_id, order_id, currency, amount_minor, decision, reason_code, decided_by, reason, note
+      `SELECT refund_id, order_id, currency, amount_minor, decision, reason_code, decided_by, reason, note, charged_minor
        FROM refunds ORDER BY refund_id`,
     );
     const messages = await client.query<LedgerRows["messages"][number]>(

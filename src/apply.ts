@@ -31,8 +31,9 @@ async function decideParkedRefunds(client: pg.PoolClient, orderId: string): Prom
     const amountMinor = Number(refund.amount_minor);
     const d = decideRefund({ amountMinor, currency: refund.currency, reason: refund.reason, occurredAt: refund.occurred_at }, order);
     await client.query(
-      `UPDATE refunds SET decision = $2, reason_code = $3, decided_by = $4::text, note = $5,
-         decided_at = CASE WHEN $4::text = 'none' THEN NULL ELSE now() END
+      `UPDATE refunds SET decision = $2::text, reason_code = $3, decided_by = $4::text, note = $5,
+         decided_at = CASE WHEN $4::text = 'none' THEN NULL ELSE now() END,
+         charged_minor = CASE WHEN $2::text = 'auto_approved' THEN amount_minor ELSE NULL END
        WHERE refund_id = $1`,
       [refund.refund_id, d.decision, d.reasonCode, d.decidedBy, d.note],
     );
@@ -116,8 +117,9 @@ export async function applyEvent(input: ApplyInput): Promise<{ status: ApplyStat
           );
           const r = await client.query(
             `INSERT INTO refunds (refund_id, order_id, currency, amount_minor, reason, occurred_at,
-                                  decision, reason_code, decided_by, note, decided_at, event_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text, $10, CASE WHEN $9::text = 'none' THEN NULL ELSE now() END, $11)
+                                  decision, reason_code, decided_by, note, decided_at, event_id, charged_minor)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text, $10, CASE WHEN $9::text = 'none' THEN NULL ELSE now() END, $11,
+                     CASE WHEN $7::text = 'auto_approved' THEN $4::bigint ELSE NULL END)
              ON CONFLICT (refund_id) DO NOTHING`,
             [
               event.refundId,

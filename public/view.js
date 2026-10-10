@@ -1,8 +1,9 @@
 // The logic of the approval screen. No DOM and no network, so it is tested from Node (test/view.test.ts).
 // Everything here returns plain strings and plain objects: the page puts them in with textContent only.
 //
-// `policy` is what GET /policy returned (the numbers of the refund policy and the decimals of each currency).
-// It is optional: without it the wording stays correct, only less specific, so no number is typed in this file.
+// `policy` is what GET /policy returned (the numbers of the refund policy, the fixed rates and the decimals of
+// each currency). It is optional: without it the wording stays correct, only less specific.
+// This file does no currency arithmetic: the converted amounts come from the service (GET /queue).
 
 function digitsFor(currency, policy) {
   const table = policy && policy.currency_digits;
@@ -20,6 +21,14 @@ export function formatMoney(minor, currency, policy) {
   const whole = Math.floor(abs / scale);
   const fraction = digits > 0 ? `.${String(abs % scale).padStart(digits, "0")}` : "";
   return `${sign}${whole}${fraction} ${currency}`;
+}
+
+/** A fixed rate given in millionths of a EUR per unit: 920000 -> "0.92", 1000000 -> "1". */
+export function formatRate(micro) {
+  if (!Number.isSafeInteger(micro) || micro < 0) return "?";
+  const whole = Math.floor(micro / 1_000_000);
+  const fraction = String(micro % 1_000_000).padStart(6, "0").replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : String(whole);
 }
 
 function limitText(policy) {
@@ -52,14 +61,25 @@ export function explain(refund, policy) {
   }
 }
 
+function rateSentence(currencies, policy) {
+  const table = policy && policy.eur_per_unit_micro;
+  if (!table) return null;
+  const parts = [...new Set(currencies)].filter((c) => c !== "EUR" && Object.hasOwn(table, c)).map((c) => `1 ${c} = ${formatRate(table[c])} EUR`);
+  return parts.length ? `the fixed rates (${parts.join(", ")})` : null;
+}
+
+function nullable(value) {
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 /**
- * Turns the ledger into what the screen lists: every queued refund, grouped by order, with the order's numbers
- * and the things worth a warning before Approve is clicked. The server decides; a warning only says what it
- * will probably answer.
+ * Turns the queue into what the screen lists: every queued refund, grouped by order, with the order's numbers,
+ * the converted amounts when the currencies are mixed, and the things worth a notice before Approve is clicked.
+ * The server decides; a warning only says what it will probably answer.
  */
-export function buildQueue(ledger, policy) {
-  const orders = ledger && ledger.orders ? ledger.orders : {};
-  const refunds = ledger && ledger.refunds ? ledger.refunds : {};
+export function buildQueue(data, policy) {
+  const orders = data && data.orders ? data.orders : {};
+  const refunds = data && data.refunds ? data.refunds : {};
 
   const queued = Object.entries(refunds)
     .filter(([, r]) => r.decision === "queued")
@@ -70,46 +90,107 @@ export function buildQueue(ledger, policy) {
   for (const r of queued) {
     let group = groups[groups.length - 1];
     if (!group || group.orderId !== r.order_id) {
-      const o = Object.hasOwn(orders, r.order_id) ? orders[r.order_id] : null;
-      group = {
-        orderId: r.order_id,
-        order: o
-          ? { status: o.status, currency: o.currency, total_minor: o.total_minor, refunded_minor: o.refunded_minor, remaining_minor: o.total_minor - o.refunded_minor }
-          : null,
-        refunds: [],
-      };
+      group = { orderId: r.order_id, order: Object.hasOwn(orders, r.order_id) ? orders[r.order_id] : null, refunds: [] };
       groups.push(group);
     }
-    group.refunds.push({
-      id: r.id,
-      order_id: r.order_id,
-      currency: r.currency,
-      amount_minor: r.amount_minor,
-      reason: r.reason,
-      reason_code: r.reason_code,
-      note: r.note ?? null,
-      explanation: explain(r, policy),
-      warnings: warningsFor(r, group.order, policy),
-    });
+    group.refunds.push(r);
   }
-  return { count: queued.length, groups };
+
+  return {
+    count: queued.length,
+    groups: groups.map((g) => {
+      const o = g.order;
+      // "mixed": some refund here is in another currency than its order. Then everything is also shown in EUR.
+      const mixed = o !== null && g.refunds.some((r) => r.currency !== o.currency);
+      const remaining = o ? o.total_minor - o.refunded_minor : null;
+      return {
+        orderId: g.orderId,
+        mixed,
+        order: o ? { status: o.status, currency: o.currency, total_minor: o.total_minor, refunded_minor: o.refunded_minor, remaining_minor: remaining } : null,
+        summary: o ? orderSummary(o, remaining, mixed, policy) : "not in the queue's data",
+        refunds: g.refunds.map((r) => refundView(r, o, remaining, mixed, policy)),
+      };
+    }),
+  };
 }
 
-function warningsFor(refund, order, policy) {
-  if (!order) return ["This order is not in the ledger."];
+function inEur(minor, eurMinor, currency, policy) {
+  return currency !== "EUR" && nullable(eurMinor) !== null ? ` (≈ ${formatMoney(eurMinor, "EUR", policy)})` : "";
+}
+
+function orderSummary(o, remaining, mixed, policy) {
+  const eur = (minor, eurMinor) => (mixed ? inEur(minor, eurMinor, o.currency, policy) : "");
+  return [
+    o.status,
+    `total ${formatMoney(o.total_minor, o.currency, policy)}${eur(o.total_minor, o.total_eur_minor)}`,
+    `refunded ${formatMoney(o.refunded_minor, o.currency, policy)}${eur(o.refunded_minor, o.refunded_eur_minor)}`,
+    `still refundable ${formatMoney(remaining, o.currency, policy)}${eur(remaining, o.remaining_eur_minor)}`,
+  ].join(" · ");
+}
+
+function refundView(r, order, remaining, mixed, policy) {
+  const differs = order !== null && r.currency !== order.currency;
+  const asOrder = differs ? nullable(r.in_order_currency_minor) : r.amount_minor;
+  const lines = [];
+  const notices = [];
   const warnings = [];
-  if (order.status === "cancelled") warnings.push("This order was cancelled. Approving will be refused; you can still reject it.");
-  if (refund.currency !== order.currency) {
-    warnings.push(`The refund is in ${refund.currency} but the order is in ${order.currency}. Approving is refused for now; you can still reject it.`);
-  } else if (refund.amount_minor > order.remaining_minor) {
-    warnings.push(`Only ${formatMoney(order.remaining_minor, order.currency, policy)} of this order is still refundable. Approving will be refused unless that changes.`);
+
+  if (mixed && r.currency !== "EUR" && nullable(r.eur_minor) !== null) {
+    lines.push(["In EUR", `≈ ${formatMoney(r.eur_minor, "EUR", policy)}`]);
   }
-  return warnings;
+  if (differs && asOrder !== null) {
+    lines.push(["If approved", `counts as ${formatMoney(asOrder, order.currency, policy)} against the order`]);
+  }
+
+  if (!order) {
+    warnings.push("This order is not in the queue's data.");
+  } else {
+    if (order.status === "cancelled") warnings.push("This order was cancelled. Approving will be refused; you can still reject it.");
+    if (differs) {
+      if (asOrder === null) {
+        warnings.push(`There is no exchange rate between ${r.currency} and ${order.currency}, so this cannot be approved here. You can still reject it.`);
+      } else {
+        const rates = rateSentence([r.currency, order.currency], policy);
+        notices.push(
+          `The refund is in ${r.currency} but the order is in ${order.currency}. ` +
+            (rates ? `Amounts are converted at ${rates}, rounded to the smallest unit. ` : "Amounts are converted at fixed rates. ") +
+            "Approve only if this is right.",
+        );
+        if (asOrder > remaining) {
+          warnings.push(
+            `Approving would count ${formatMoney(asOrder, order.currency, policy)} against the order, but only ${formatMoney(remaining, order.currency, policy)} is still refundable. Approving will be refused unless that changes.`,
+          );
+        }
+      }
+    } else if (r.amount_minor > remaining) {
+      warnings.push(`Only ${formatMoney(remaining, order.currency, policy)} of this order is still refundable. Approving will be refused unless that changes.`);
+    }
+  }
+
+  return {
+    id: r.id,
+    order_id: r.order_id,
+    currency: r.currency,
+    amount_minor: r.amount_minor,
+    order_currency: order ? order.currency : null,
+    counted_minor: differs ? asOrder : null,
+    reason: r.reason,
+    reason_code: r.reason_code,
+    note: r.note ?? null,
+    explanation: explain(r, policy),
+    lines,
+    notices,
+    warnings,
+  };
 }
 
 /** The label of the second click that confirms an approval. */
 export function confirmLabel(refund, policy) {
-  return `Confirm approve ${formatMoney(refund.amount_minor, refund.currency, policy)}?`;
+  const amount = formatMoney(refund.amount_minor, refund.currency, policy);
+  if (refund.order_currency && refund.order_currency !== refund.currency && Number.isSafeInteger(refund.counted_minor)) {
+    return `Confirm approve ${amount} (counts as ${formatMoney(refund.counted_minor, refund.order_currency, policy)})?`;
+  }
+  return `Confirm approve ${amount}?`;
 }
 
 /** What the service answered when it refused, in words. */
@@ -128,10 +209,10 @@ export function describeRefusal(status, body, currency, policy) {
         return "This refund is waiting for its order and cannot be decided yet.";
       case "order_cancelled":
         return "The order was cancelled meanwhile, so it cannot be approved. You can still reject it.";
-      case "currency_mismatch":
-        return "The refund is in a different currency than the order, so it cannot be approved for now. You can still reject it.";
+      case "no_exchange_rate":
+        return "There is no exchange rate between this refund's currency and the order's, so it cannot be approved here. You can still reject it.";
       case "exceeds_balance":
-        return `No longer fits: only ${formatMoney(body.remaining_minor, currency, policy)} of this order is still refundable. The refund stays queued.`;
+        return `Not approved: it no longer fits. Only ${formatMoney(body.remaining_minor, body.remaining_currency || currency, policy)} of this order is still refundable. The refund stays queued; you can reject it.`;
       default:
         return `Refused (${error ?? "conflict"}).`;
     }
@@ -143,8 +224,11 @@ export function describeRefusal(status, body, currency, policy) {
 export function describeSuccess(action, result, policy) {
   const r = result && result.refund;
   if (!r || !result.order) return action === "approve" ? "Approved." : "Rejected.";
+  const own = formatMoney(r.amount_minor, r.currency, policy);
   if (action === "approve") {
-    return `Approved ${r.refund_id}: ${formatMoney(r.amount_minor, r.currency, policy)}. ${formatMoney(result.order.remaining_minor, r.currency, policy)} of order ${r.order_id} is still refundable.`;
+    const orderCurrency = result.order.currency || r.currency;
+    const counted = orderCurrency !== r.currency && Number.isSafeInteger(r.charged_minor) ? ` (counted as ${formatMoney(r.charged_minor, orderCurrency, policy)})` : "";
+    return `Approved ${r.refund_id}: ${own}${counted}. ${formatMoney(result.order.remaining_minor, orderCurrency, policy)} of order ${r.order_id} is still refundable.`;
   }
-  return `Rejected ${r.refund_id}: ${formatMoney(r.amount_minor, r.currency, policy)}. Nothing was paid.`;
+  return `Rejected ${r.refund_id}: ${own}. Nothing was paid.`;
 }

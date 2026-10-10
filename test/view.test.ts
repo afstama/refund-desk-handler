@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { buildQueue, confirmLabel, describeRefusal, describeSuccess, explain, formatMoney } from "../public/view.js";
+import { buildQueue, confirmLabel, describeRefusal, describeSuccess, explain, formatMoney, formatRate } from "../public/view.js";
 import { policySummary } from "../src/policy.js";
 
 // What GET /policy sends. Taken from the server's own function, so these tests cannot drift from the real numbers.
@@ -123,22 +123,83 @@ describe("buildQueue", () => {
   test("the order's numbers: total, refunded, still refundable", () => {
     const view = buildQueue(ledger({ "R-1": refund() }, { "O-1": order({ total_minor: 6000, refunded_minor: 1500, status: "delivered" }) }));
     assert.deepEqual(view.groups[0]!.order, { status: "delivered", currency: "EUR", total_minor: 6000, refunded_minor: 1500, remaining_minor: 4500 });
+    assert.equal(view.groups[0]!.summary, "delivered · total 60.00 EUR · refunded 15.00 EUR · still refundable 45.00 EUR");
     assert.deepEqual(view.groups[0]!.refunds[0]!.warnings, []);
+    assert.deepEqual(view.groups[0]!.refunds[0]!.notices, []);
+    assert.deepEqual(view.groups[0]!.refunds[0]!.lines, []);
   });
 
-  test("warnings: cancelled order, currency mismatch, no longer fits, order not in the ledger", () => {
+  test("warnings: cancelled order, no longer fits, order not in the queue's data", () => {
     const cancelled = buildQueue(ledger({ "R-1": refund() }, { "O-1": order({ status: "cancelled" }) }));
     assert.match(cancelled.groups[0]!.refunds[0]!.warnings[0]!, /cancelled/);
-
-    const mismatch = buildQueue(ledger({ "R-1": refund({ currency: "EUR" }) }, { "O-1": order({ currency: "USD" }) }));
-    assert.match(mismatch.groups[0]!.refunds[0]!.warnings[0]!, /refund is in EUR but the order is in USD/);
 
     const tight = buildQueue(ledger({ "R-1": refund({ amount_minor: 3500 }) }, { "O-1": order({ total_minor: 6000, refunded_minor: 3500 }) }));
     assert.match(tight.groups[0]!.refunds[0]!.warnings[0]!, /Only 25.00 EUR of this order is still refundable/);
 
     const unknown = buildQueue(ledger({ "R-1": refund({ order_id: "O-GONE" }) }, {}));
-    assert.deepEqual(unknown.groups[0]!.refunds[0]!.warnings, ["This order is not in the ledger."]);
+    assert.deepEqual(unknown.groups[0]!.refunds[0]!.warnings, ["This order is not in the queue's data."]);
     assert.equal(unknown.groups[0]!.order, null);
+  });
+
+  // R-0075 in miniature: 12.00 EUR refund on a 65.00 USD order. The service computed 1304 USD cents and
+  // the EUR values; the page only shows them.
+  const mixed = (over: Record<string, unknown> = {}, orderOver: Record<string, unknown> = {}) =>
+    buildQueue(
+      ledger(
+        { "R-1": refund({ currency: "EUR", amount_minor: 1200, note: "currency_mismatch", reason_code: "OVER_THRESHOLD", eur_minor: 1200, in_order_currency_minor: 1304, ...over }) },
+        { "O-1": order({ currency: "USD", total_minor: 6500, refunded_minor: 0, total_eur_minor: 5980, refunded_eur_minor: 0, remaining_eur_minor: 5980, ...orderOver }) },
+      ),
+      POLICY,
+    );
+
+  test("mixed currencies are also shown in EUR, with a disclaimer, and the human may still approve", () => {
+    const g = mixed().groups[0]!;
+    assert.equal(g.mixed, true);
+    assert.equal(g.summary, "delivered · total 65.00 USD (≈ 59.80 EUR) · refunded 0.00 USD (≈ 0.00 EUR) · still refundable 65.00 USD (≈ 59.80 EUR)");
+    const r = g.refunds[0]!;
+    assert.deepEqual(r.lines, [["If approved", "counts as 13.04 USD against the order"]]);
+    assert.equal(r.notices.length, 1);
+    assert.match(r.notices[0]!, /The refund is in EUR but the order is in USD\. Amounts are converted at the fixed rates \(1 USD = 0\.92 EUR\), rounded to the smallest unit\. Approve only if this is right\./);
+    assert.deepEqual(r.warnings, [], "nothing says approval will be refused: it will not be");
+    assert.equal(r.counted_minor, 1304);
+  });
+
+  test("a refund in a currency other than EUR gets its EUR value on its own line", () => {
+    const g = mixed({ currency: "GBP", amount_minor: 1800, eur_minor: 2106, in_order_currency_minor: 2289 }, { currency: "USD" }).groups[0]!;
+    assert.deepEqual(g.refunds[0]!.lines, [
+      ["In EUR", "≈ 21.06 EUR"],
+      ["If approved", "counts as 22.89 USD against the order"],
+    ]);
+    assert.match(g.refunds[0]!.notices[0]!, /1 GBP = 1\.17 EUR/);
+    assert.match(g.refunds[0]!.notices[0]!, /1 USD = 0\.92 EUR/);
+  });
+
+  test("the confirmation says what will be counted when the currencies differ", () => {
+    const r = mixed().groups[0]!.refunds[0]!;
+    assert.equal(confirmLabel(r, POLICY), "Confirm approve 12.00 EUR (counts as 13.04 USD)?");
+  });
+
+  test("when the converted amount no longer fits, it says so in the order's currency", () => {
+    const g = mixed({}, { refunded_minor: 5500 }).groups[0]!;
+    assert.match(g.refunds[0]!.warnings[0]!, /would count 13\.04 USD against the order, but only 10\.00 USD is still refundable/);
+  });
+
+  test("without an exchange rate the refund is shown honestly: it can only be rejected", () => {
+    const g = mixed({ currency: "CHF", amount_minor: 1200, eur_minor: null, in_order_currency_minor: null }).groups[0]!;
+    assert.match(g.refunds[0]!.warnings[0]!, /no exchange rate between CHF and USD.*cannot be approved here.*still reject/);
+    assert.deepEqual(g.refunds[0]!.notices, []);
+    assert.equal(g.refunds[0]!.counted_minor, null);
+  });
+
+  test("same currency: no EUR lines, no notices, even for a USD order", () => {
+    const view = buildQueue(
+      ledger({ "R-1": refund({ currency: "USD", amount_minor: 1000, eur_minor: 920, in_order_currency_minor: 1000 }) }, { "O-1": order({ currency: "USD", total_eur_minor: 5520 }) }),
+      POLICY,
+    );
+    assert.equal(view.groups[0]!.mixed, false);
+    assert.deepEqual(view.groups[0]!.refunds[0]!.lines, []);
+    assert.deepEqual(view.groups[0]!.refunds[0]!.notices, []);
+    assert.equal(view.groups[0]!.summary, "delivered · total 60.00 USD · refunded 0.00 USD · still refundable 60.00 USD");
   });
 
   test("an order id such as __proto__ or constructor is looked up as a key, not as a property", () => {
@@ -168,11 +229,13 @@ describe("what the service answered", () => {
     assert.match(describeRefusal(409, { error: "already_decided", refund: { decision: "approved" } }, "EUR"), /Already approved/);
     assert.match(describeRefusal(409, { error: "not_queued" }, "EUR"), /waiting for its order/);
     assert.match(describeRefusal(409, { error: "order_cancelled" }, "EUR"), /cancelled meanwhile.*still reject/);
-    assert.match(describeRefusal(409, { error: "currency_mismatch" }, "EUR"), /different currency.*still reject/);
+    assert.match(describeRefusal(409, { error: "no_exchange_rate" }, "EUR"), /no exchange rate.*still reject/);
     assert.equal(
       describeRefusal(409, { error: "exceeds_balance", remaining_minor: 2500 }, "EUR"),
-      "No longer fits: only 25.00 EUR of this order is still refundable. The refund stays queued.",
+      "Not approved: it no longer fits. Only 25.00 EUR of this order is still refundable. The refund stays queued; you can reject it.",
     );
+    // the balance is in the order's currency, which is not always the refund's
+    assert.match(describeRefusal(409, { error: "exceeds_balance", remaining_minor: 1000, remaining_currency: "USD" }, "EUR"), /Only 10\.00 USD of this order/);
     assert.match(describeRefusal(418, {}, "EUR"), /Unexpected answer \(418\)/);
   });
 
@@ -182,12 +245,30 @@ describe("what the service answered", () => {
     assert.equal(describeSuccess("reject", result), "Rejected R-0086: 35.00 EUR. Nothing was paid.");
   });
 
+  test("success in words when the currencies differ: what was counted against the order", () => {
+    const result = {
+      refund: { refund_id: "R-0075", order_id: "O-1111", amount_minor: 1200, currency: "EUR", charged_minor: 1304 },
+      order: { currency: "USD", remaining_minor: 5196 },
+    };
+    assert.equal(describeSuccess("approve", result), "Approved R-0075: 12.00 EUR (counted as 13.04 USD). 51.96 USD of order O-1111 is still refundable.");
+  });
+
+  test("rates are shown the way they were written: millionths of a EUR to a decimal", () => {
+    assert.equal(formatRate(920_000), "0.92");
+    assert.equal(formatRate(1_170_000), "1.17");
+    assert.equal(formatRate(1_000_000), "1");
+    assert.equal(formatRate(6200), "0.0062");
+    assert.equal(formatRate(3_000_000), "3");
+    assert.equal(formatRate(-1), "?");
+    assert.equal(formatRate(1.5), "?");
+  });
+
   test("a success answer without the expected body is still reported as done", () => {
     assert.equal(describeSuccess("approve", {}), "Approved.");
     assert.equal(describeSuccess("reject", undefined), "Rejected.");
   });
 
   test("the confirmation names the amount that will move", () => {
-    assert.equal(confirmLabel({ amount_minor: 3500, currency: "EUR" }), "Confirm approve 35.00 EUR?");
+    assert.equal(confirmLabel({ amount_minor: 3500, currency: "EUR", order_currency: "EUR", counted_minor: null }), "Confirm approve 35.00 EUR?");
   });
 });

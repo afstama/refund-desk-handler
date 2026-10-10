@@ -75,6 +75,14 @@ describe("what the page's own files contain", () => {
     }
   });
 
+  test("the status line stays in view while the queue is scrolled, so a message is not missed", () => {
+    const css = read("app.css");
+    const rule = /\.status\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+    assert.match(rule, /position:\s*sticky/);
+    assert.match(rule, /top:\s*0/);
+    assert.match(rule, /background:/, "a background, so the text does not run into what scrolls under it");
+  });
+
   test("the page never builds an Authorization header and never writes the token anywhere but the login body", () => {
     const code = stripped("app.js");
     assert.ok(!/authorization/i.test(code), "the page must not send an Authorization header: the cookie does that job");
@@ -115,11 +123,14 @@ const queued = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const QUEUE = {
-  orders: { "O-1122": ORDER, "O-1111": { status: "delivered", currency: "USD", total_minor: 6500, refunded_minor: 0 } },
+  orders: {
+    "O-1122": ORDER,
+    "O-1111": { status: "delivered", currency: "USD", total_minor: 6500, refunded_minor: 0, total_eur_minor: 5980, refunded_eur_minor: 0, remaining_eur_minor: 5980 },
+  },
   refunds: {
     "R-0086": queued(),
     "R-0087": queued(),
-    "R-0075": queued({ order_id: "O-1111", amount_minor: 1200, note: "currency_mismatch" }),
+    "R-0075": queued({ order_id: "O-1111", amount_minor: 1200, note: "currency_mismatch", eur_minor: 1200, in_order_currency_minor: 1304 }),
   },
 };
 
@@ -264,7 +275,10 @@ describe("the queue", () => {
       assert.ok(text.includes(expected), expected);
     }
     assert.ok(text.includes("The refund is in a different currency than the order"), "explanation of R-0075");
-    assert.ok(text.includes("The refund is in EUR but the order is in USD"), "warning on R-0075");
+    assert.ok(text.includes("The refund is in EUR but the order is in USD. Amounts are converted at the fixed rates (1 USD = 0.92 EUR)"), "disclaimer on R-0075");
+    assert.ok(text.includes("total 65.00 USD (≈ 59.80 EUR)"), "the order of R-0075 in EUR as well");
+    assert.ok(text.includes("13.04 USD"), "what approving would count against the order");
+    assert.ok(!text.includes("Approving is refused"), "nothing announces a refusal that will not happen");
     assert.equal(buttons(queue, "Approve").length, 3);
     assert.equal(buttons(queue, "Reject").length, 3);
   });
@@ -336,8 +350,53 @@ describe("deciding", () => {
     await buttons(row(queue, "R-0087"), "Approve")[0]!.fire("click");
     await buttons(row(queue, "R-0087"), /^Confirm/)[0]!.fire("click");
     assert.equal(posts().length, 1);
-    assert.equal(status(), "No longer fits: only 25.00 EUR of this order is still refundable. The refund stays queued.");
+    assert.equal(status(), "Not approved: it no longer fits. Only 25.00 EUR of this order is still refundable. The refund stays queued; you can reject it.");
     assert.equal(calls.filter((c) => c.url === "/queue").length, 2);
+  });
+
+  test("a refusal is also written on the refund's own card, where the click was (the status line may be far above)", async () => {
+    const answer = { status: 409, body: { error: "exceeds_balance", remaining_minor: 2500 } };
+    const { queue, posts } = await start({ signedIn: true, answers: { "/refunds/R-0087/approve": answer } });
+    await buttons(row(queue, "R-0087"), "Approve")[0]!.fire("click");
+    await buttons(row(queue, "R-0087"), /^Confirm/)[0]!.fire("click");
+    assert.equal(posts().length, 1);
+    const card = row(queue, "R-0087");
+    const notes = descendants(card).filter((e) => e.getAttribute("class") === "row-note error");
+    assert.equal(notes.length, 1, "one message on the card");
+    assert.match(notes[0]!.textContent, /Not approved: it no longer fits\. Only 25\.00 EUR/);
+    // and not on the other cards
+    assert.equal(descendants(row(queue, "R-0086")).filter((e) => (e.getAttribute("class") ?? "").startsWith("row-note")).length, 0);
+    // the card still has both buttons: the human can reject it
+    assert.equal(buttons(card, "Reject").length, 1);
+  });
+
+  test("the note on a card goes away when that refund is clicked again, and when the refund leaves the queue", async () => {
+    const refused = { status: 409, body: { error: "exceeds_balance", remaining_minor: 2500 } };
+    const { queue, doc } = await start({ signedIn: true, answers: { "/refunds/R-0087/approve": refused } });
+    await buttons(row(queue, "R-0087"), "Approve")[0]!.fire("click");
+    await buttons(row(queue, "R-0087"), /^Confirm/)[0]!.fire("click");
+    assert.equal(descendants(row(queue, "R-0087")).filter((e) => e.getAttribute("class") === "row-note error").length, 1);
+    // the next click on the same card clears the old message first
+    await buttons(row(queue, "R-0087"), "Approve")[0]!.fire("click");
+    assert.equal(descendants(row(queue, "R-0087")).filter((e) => (e.getAttribute("class") ?? "").startsWith("row-note")).length, 0);
+    void doc;
+  });
+
+  test("approving a refund in another currency asks with the converted amount, and sends the same request", async () => {
+    const answer = {
+      status: 200,
+      body: {
+        refund: { refund_id: "R-0075", order_id: "O-1111", amount_minor: 1200, currency: "EUR", charged_minor: 1304 },
+        order: { currency: "USD", remaining_minor: 5196 },
+      },
+    };
+    const { queue, status, posts } = await start({ signedIn: true, answers: { "/refunds/R-0075/approve": answer } });
+    await buttons(row(queue, "R-0075"), "Approve")[0]!.fire("click");
+    assert.equal(buttons(row(queue, "R-0075"), "Confirm approve 12.00 EUR (counts as 13.04 USD)?").length, 1);
+    await buttons(row(queue, "R-0075"), /^Confirm/)[0]!.fire("click");
+    assert.equal(posts().length, 1);
+    assert.equal(posts()[0]!.url, "/refunds/R-0075/approve");
+    assert.equal(status(), "Approved R-0075: 12.00 EUR (counted as 13.04 USD). 51.96 USD of order O-1111 is still refundable.");
   });
 
   test("a session that ended: back to the login with 'Sign in again.', and the queue is gone from the screen", async () => {

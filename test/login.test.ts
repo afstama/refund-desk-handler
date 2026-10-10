@@ -146,7 +146,7 @@ describe("GET /queue is private", () => {
     assert.deepEqual(Object.keys(body.refunds), ["R-QA", "R-QB"]);
     assert.ok(Object.values(body.refunds).every((r) => r.decision === "queued"));
     assert.deepEqual(Object.keys(body.orders), ["O-Q"]);
-    assert.deepEqual(body.orders["O-Q"], { status: "delivered", currency: "EUR", total_minor: 6000, refunded_minor: 0 });
+    assert.deepEqual(body.orders["O-Q"], { status: "delivered", currency: "EUR", total_minor: 6000, refunded_minor: 0, total_eur_minor: 6000, refunded_eur_minor: 0, remaining_eur_minor: 6000 });
     assert.ok(!res.body.includes("@"));
     assert.equal(res.headers["cache-control"], "no-store");
   });

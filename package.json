@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "migrate": "tsx src/migrate.ts",
     "test": "node scripts/run-tests.mjs",
-    "replay": "tsx scripts/replay.ts"
+    "replay": "tsx scripts/replay.ts",
+    "reset": "tsx scripts/reset.ts"
   },
   "dependencies": {
     "fastify": "^5.12.5",

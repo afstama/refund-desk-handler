@@ -14,7 +14,8 @@ const SAME_ORIGIN = { "x-requested-with": "refund-desk" };
  * @param fetchFn fetch (or a test double)
  */
 export function createApp(doc, fetchFn) {
-  const state = { queue: null, policy: null, busy: new Set(), confirming: null, log: [] };
+  // `notes`: what the service said about one refund, kept on its own card so it is seen where the click was.
+  const state = { queue: null, policy: null, busy: new Set(), confirming: null, log: [], notes: new Map() };
 
   const statusLine = doc.getElementById("status");
   const loginSection = doc.getElementById("login");
@@ -49,6 +50,7 @@ export function createApp(doc, fetchFn) {
       state.queue = null;
       state.confirming = null;
       state.busy.clear();
+      state.notes.clear();
       state.log = [];
       queue.replaceChildren();
       logList.replaceChildren();
@@ -81,30 +83,31 @@ export function createApp(doc, fetchFn) {
       actions.appendChild(cancel);
     }
 
-    const facts = el("dl", { class: "facts" }, [
+    const factRows = [
       el("dt", { text: "Amount" }),
       el("dd", { class: "amount", text: formatMoney(r.amount_minor, r.currency, state.policy) }),
+    ];
+    for (const [label, value] of r.lines) factRows.push(el("dt", { text: label }), el("dd", { text: value }));
+    factRows.push(
       el("dt", { text: "Customer's reason" }),
       el("dd", { text: r.reason }),
       el("dt", { text: "Why a person decides" }),
       el("dd", { text: r.explanation }),
-    ]);
+    );
 
-    const card = el("article", { class: busy ? "refund busy" : "refund" }, [el("h4", { text: r.id }), facts]);
+    const card = el("article", { class: busy ? "refund busy" : "refund" }, [el("h4", { text: r.id }), el("dl", { class: "facts" }, factRows)]);
+    for (const n of r.notices) card.appendChild(el("p", { class: "notice", text: n }));
     for (const w of r.warnings) card.appendChild(el("p", { class: "warning", text: w }));
+    const note = state.notes.get(r.id);
+    if (note) card.appendChild(el("p", { class: note.kind === "error" ? "row-note error" : "row-note ok", text: note.text }));
     card.appendChild(actions);
     return card;
   }
 
   function orderBlock(group) {
-    const o = group.order;
-    const p = state.policy;
-    const summary = o
-      ? `${o.status} · total ${formatMoney(o.total_minor, o.currency, p)} · refunded ${formatMoney(o.refunded_minor, o.currency, p)} · still refundable ${formatMoney(o.remaining_minor, o.currency, p)}`
-      : "not in the queue's data";
     return el("section", { class: "order" }, [
       el("h3", { text: `Order ${group.orderId}` }),
-      el("p", { class: "order-summary", text: summary }),
+      el("p", { class: "order-summary", text: group.summary }),
       ...group.refunds.map(refundCard),
     ]);
   }
@@ -112,6 +115,9 @@ export function createApp(doc, fetchFn) {
   function render() {
     if (!state.queue) return;
     const view = buildQueue(state.queue, state.policy);
+    // a note belongs to a refund that is still in the queue; once it is decided or gone, the note goes too
+    const present = new Set(view.groups.flatMap((g) => g.refunds.map((r) => r.id)));
+    for (const id of [...state.notes.keys()]) if (!present.has(id)) state.notes.delete(id);
     countHeading.textContent = view.count === 0 ? "Nothing is waiting for a human." : `${view.count} ${view.count === 1 ? "refund" : "refunds"} waiting for a human`;
     queue.replaceChildren(...view.groups.map(orderBlock));
   }
@@ -193,17 +199,25 @@ export function createApp(doc, fetchFn) {
 
   function onApprove(refund) {
     if (state.confirming !== refund.id) {
-      // first click: ask once more, because money moves
+      // first click: ask once more, because money moves. A new attempt starts: the last answer is no longer news.
       state.confirming = refund.id;
+      state.notes.delete(refund.id);
       render();
       return;
     }
     return act("approve", refund);
   }
 
+  /** Says it in the status line AND on the refund's own card: the status line may be far above the click. */
+  function sayAbout(refund, message, kind) {
+    say(message, kind);
+    state.notes.set(refund.id, { text: message, kind });
+  }
+
   async function act(action, refund) {
     if (state.busy.has(refund.id)) return;
     state.confirming = null;
+    state.notes.delete(refund.id);
     state.busy.add(refund.id);
     render();
     try {
@@ -212,7 +226,7 @@ export function createApp(doc, fetchFn) {
         res = await fetchFn(`/refunds/${encodeURIComponent(refund.id)}/${action}`, { method: "POST", headers: SAME_ORIGIN });
       } catch (err) {
         console.error(err);
-        say("Could not reach the service. Check that it is running, then press Refresh.", "error");
+        sayAbout(refund, "Could not reach the service. Check that it is running, then press Refresh.", "error");
         return;
       }
       let body = {};
@@ -235,14 +249,14 @@ export function createApp(doc, fetchFn) {
         renderLog();
         await load();
       } else {
-        say(describeRefusal(res.status, body, refund.currency, state.policy), "error");
+        sayAbout(refund, describeRefusal(res.status, body, refund.currency, state.policy), "error");
         // The state changed under us (or the refund is gone): show the real queue.
         if (res.status === 409 || res.status === 404) await load();
       }
     } catch (err) {
       // The service did answer, and this page failed while showing the answer. Do not blame the network.
       console.error(err);
-      say("The service answered, but this page could not show the result. Press Refresh to see the queue.", "error");
+      sayAbout(refund, "The service answered, but this page could not show the result. Press Refresh to see the queue.", "error");
     } finally {
       state.busy.delete(refund.id);
       render();

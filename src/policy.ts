@@ -71,6 +71,23 @@ export function toEurMinor(amountMinor: number, currency: string, rates: Readonl
   return Number((BigInt(amountMinor) * BigInt(micro) * 2n + denominator) / (denominator * 2n));
 }
 
+/**
+ * An amount in one currency expressed in another, through EUR at the fixed rates, rounded half up once.
+ * It is what an approval of a refund in another currency counts against the order's balance.
+ * null when either currency has no rate. Never less than 1: a refund must not be counted as nothing.
+ */
+export function convertMinor(amountMinor: number, from: string, to: string, rates: ReadonlyMap<string, number> = EUR_MICRO_RATES): number | null {
+  if (from === to) return amountMinor;
+  const fromMicro = rates.get(from);
+  const toMicro = rates.get(to);
+  if (fromMicro === undefined || toMicro === undefined) return null;
+  // major(from) = a / 10^df ; EUR = major * fromMicro / 1e6 ; major(to) = EUR * 1e6 / toMicro ; minor(to) = major(to) * 10^dt
+  const numerator = BigInt(amountMinor) * BigInt(fromMicro) * 10n ** BigInt(minorUnitDigits(to));
+  const denominator = BigInt(toMicro) * 10n ** BigInt(minorUnitDigits(from));
+  const rounded = Number((numerator * 2n + denominator) / (denominator * 2n));
+  return Math.max(1, rounded);
+}
+
 /** What the screen needs to word its explanations, so that no number is typed in two places. */
 export function policySummary() {
   return {

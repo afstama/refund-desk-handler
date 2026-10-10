@@ -90,17 +90,27 @@ describe("database", () => {
       code("23514"),
     );
 
-    const refund = (id: string, decision: string, decidedBy: string) =>
+    // `charged`: what an approval counts against the order, in the order's currency (null while nothing is paid)
+    const refund = (id: string, decision: string, decidedBy: string, charged: number | null = null) =>
       pool.query(
-        `INSERT INTO refunds (refund_id, order_id, currency, amount_minor, reason, occurred_at, decision, reason_code, decided_by, event_id)
-         VALUES ($1, 'O-1', 'EUR', 100, 'damaged', now(), $2, 'AUTO_OK', $3, 'evt_1')`,
-        [id, decision, decidedBy],
+        `INSERT INTO refunds (refund_id, order_id, currency, amount_minor, reason, occurred_at, decision, reason_code, decided_by, charged_minor, event_id)
+         VALUES ($1, 'O-1', 'EUR', 100, 'damaged', now(), $2, 'AUTO_OK', $3, $4, 'evt_1')`,
+        [id, decision, decidedBy, charged],
       );
     await refund("R-1", "queued", "none");
-    await refund("R-2", "auto_approved", "policy");
+    await refund("R-2", "auto_approved", "policy", 100);
     await assert.rejects(refund("R-3", "queued", "policy"), code("23514"));
     await assert.rejects(refund("R-4", "approved", "none"), code("23514"));
     await assert.rejects(refund("R-5", "maybe", "policy"), code("23514"));
+
+    // money is counted exactly when something was approved: never on a queued or rejected refund, always on an approved one
+    await assert.rejects(refund("R-6", "approved", "human"), code("23514"));
+    await assert.rejects(refund("R-7", "auto_approved", "policy"), code("23514"));
+    await assert.rejects(refund("R-8", "queued", "none", 100), code("23514"));
+    await assert.rejects(refund("R-9", "rejected", "human", 100), code("23514"));
+    await assert.rejects(refund("R-10", "approved", "human", 0), code("23514"));
+    await refund("R-11", "approved", "human", 87);
+    await refund("R-12", "rejected", "human");
     // a refund is stored once
     await assert.rejects(refund("R-1", "queued", "none"), code("23505"));
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { AUTO_LIMIT_MINOR, decideRefund, policySummary, toEurMinor, WINDOW_DAYS, type OrderState, type RefundInput } from "../src/policy.js";
+import { AUTO_LIMIT_MINOR, convertMinor, decideRefund, policySummary, toEurMinor, WINDOW_DAYS, type OrderState, type RefundInput } from "../src/policy.js";
 import { CURRENCY_DIGITS, minorUnitDigits } from "../src/currency.js";
 
 const at = (iso: string) => new Date(iso);
@@ -62,6 +62,43 @@ describe("toEurMinor", () => {
   test("a very large amount does not lose precision", () => {
     const rates = new Map([["USD", 920_000]]);
     assert.equal(toEurMinor(99_999_999_999_999, "USD", rates), 91_999_999_999_999); // 9 999 999 999 999.99 USD
+  });
+});
+
+describe("convertMinor: one currency into another through EUR, rounded once", () => {
+  test("EUR to USD and back: 12.00 EUR is 13.04 USD, 13.04 USD is 12.00 EUR", () => {
+    assert.equal(convertMinor(1200, "EUR", "USD"), 1304); // 1304.35 rounds down
+    assert.equal(convertMinor(1304, "USD", "EUR"), 1200); // 11.9968 rounds up
+  });
+
+  test("it agrees with toEurMinor wherever the target is EUR (R-0069 to R-0074)", () => {
+    for (const [minor, currency] of [[2100, "USD"], [1800, "GBP"], [1500, "USD"], [1200, "GBP"], [4000, "USD"], [1750, "GBP"], [1, "USD"], [999_999, "GBP"]] as const) {
+      assert.equal(convertMinor(minor, currency, "EUR"), toEurMinor(minor, currency), `${minor} ${currency}`);
+    }
+  });
+
+  test("GBP to USD goes through EUR but is rounded only once", () => {
+    // 17.50 GBP = 20.475 EUR = 22.2554 USD
+    assert.equal(convertMinor(1750, "GBP", "USD"), 2226);
+    // rounding through whole cents of EUR first would give 20.48 / 0.92 = 22.2608: the same here, but never assume it
+    assert.equal(convertMinor(1, "GBP", "USD"), 1); // 1.27 cents
+  });
+
+  test("the same currency is the same amount, and a missing rate is null", () => {
+    assert.equal(convertMinor(1234, "CHF", "CHF"), 1234);
+    assert.equal(convertMinor(1234, "CHF", "USD"), null);
+    assert.equal(convertMinor(1234, "USD", "CHF"), null);
+    assert.equal(convertMinor(1234, "constructor", "EUR"), null);
+  });
+
+  test("decimals are respected, and a refund is never counted as nothing", () => {
+    const rates = new Map([["JPY", 6200], ["KWD", 3_000_000], ["EUR", 1_000_000], ["XXX", 100_000_000]]);
+    assert.equal(convertMinor(10_000, "JPY", "EUR", rates), 6200); // 10 000 yen is 62.00 EUR
+    assert.equal(convertMinor(6200, "EUR", "JPY", rates), 10_000);
+    assert.equal(convertMinor(1000, "EUR", "KWD", rates), 3333); // 10.00 EUR is 3.333 KWD
+    assert.equal(convertMinor(1, "JPY", "KWD", rates), 2); // 1 yen is 0.00207 KWD: 2 fils
+    // 1 yen against a currency worth 100 EUR: 0.0062 of its smallest unit would round to 0, and is counted as 1
+    assert.equal(convertMinor(1, "JPY", "XXX", rates), 1);
   });
 });
 

@@ -38,7 +38,7 @@ describe("assembleLedger (no database)", () => {
   test("unmatched_order_events lists what waits for an order we have not seen, sorted", () => {
     const refund = (id: string, orderId: string, decision: string) => ({
       refund_id: id, order_id: orderId, currency: "EUR", amount_minor: 500, decision,
-      reason_code: decision === "parked" ? "ORDER_UNKNOWN" : "AUTO_OK", decided_by: decision === "parked" ? "none" : "policy", reason: "damaged", note: null,
+      reason_code: decision === "parked" ? "ORDER_UNKNOWN" : "AUTO_OK", decided_by: decision === "parked" ? "none" : "policy", reason: "damaged", note: null, charged_minor: decision === "auto_approved" ? 500 : null,
     });
     const ledger = assembleLedger({
       ...emptyRows,
@@ -97,8 +97,8 @@ describe("assembleLedger (no database)", () => {
     const ledger = assembleLedger({
       ...emptyRows,
       refunds: [
-        { refund_id: "R-1", order_id: "O-1", currency: "EUR", amount_minor: 999, decision: "queued", reason_code: "NOT_DELIVERED", decided_by: "none", reason: "not_received", note: null },
-        { refund_id: "R-2", order_id: "O-2", currency: "EUR", amount_minor: 1200, decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", reason: "damaged", note: "currency_mismatch" },
+        { refund_id: "R-1", order_id: "O-1", currency: "EUR", amount_minor: 999, decision: "queued", reason_code: "NOT_DELIVERED", decided_by: "none", reason: "not_received", note: null, charged_minor: null },
+        { refund_id: "R-2", order_id: "O-2", currency: "EUR", amount_minor: 1200, decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", reason: "damaged", note: "currency_mismatch", charged_minor: null },
       ],
     });
     assert.deepEqual(ledger.refunds["R-1"], {
@@ -110,6 +110,7 @@ describe("assembleLedger (no database)", () => {
       decided_by: "none",
       reason: "not_received",
       note: null,
+      charged_minor: null,
     });
     assert.equal(ledger.refunds["R-2"]!.note, "currency_mismatch");
   });
@@ -225,7 +226,7 @@ describe("GET /ledger after a full replay of events.ndjson", () => {
   test("refunded_minor is exactly the approved refunds of each order, in this one snapshot", () => {
     const approved = new Map<string, number>();
     for (const r of Object.values(ledger.refunds)) {
-      if (r.decision === "auto_approved" || r.decision === "approved") approved.set(r.order_id, (approved.get(r.order_id) ?? 0) + r.amount_minor);
+      if (r.decision === "auto_approved" || r.decision === "approved") approved.set(r.order_id, (approved.get(r.order_id) ?? 0) + (r.charged_minor ?? 0));
     }
     for (const [id, o] of Object.entries(ledger.orders)) assert.equal(o.refunded_minor, approved.get(id) ?? 0, id);
   });
@@ -309,6 +310,7 @@ describe("GET /ledger in other situations", () => {
       decided_by: "none",
       reason: "damaged",
       note: null,
+      charged_minor: null,
     });
     assert.deepEqual(ledger.orders, {});
   });
@@ -351,7 +353,7 @@ describe("GET /ledger in other situations", () => {
         polls++;
         const approved = new Map<string, number>();
         for (const r of Object.values(ledger.refunds)) {
-          if (r.decision === "auto_approved" || r.decision === "approved") approved.set(r.order_id, (approved.get(r.order_id) ?? 0) + r.amount_minor);
+          if (r.decision === "auto_approved" || r.decision === "approved") approved.set(r.order_id, (approved.get(r.order_id) ?? 0) + (r.charged_minor ?? 0));
         }
         for (const [id, o] of Object.entries(ledger.orders)) {
           if (o.refunded_minor !== (approved.get(id) ?? 0)) problems.push(`poll ${polls}: ${id} refunded ${o.refunded_minor}, refunds say ${approved.get(id) ?? 0}`);
