@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { applyEvent } from "./apply.js";
 import { getPool } from "./db.js";
+import { readLedger } from "./ledger.js";
 import { webhookRoutes, type WebhookDeps } from "./webhooks.js";
 
 export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"] } = {}) {
@@ -14,6 +15,18 @@ export function buildApp(opts: { logger?: boolean; apply?: WebhookDeps["apply"] 
     } catch (err) {
       app.log.error({ msg: err instanceof Error ? err.message : String(err) }, "health check: database unreachable");
       return reply.code(503).send({ ok: false, db: false });
+    }
+  });
+
+  // Public by contract: only approve and reject need the bearer token. It holds no email and no message text.
+  app.get("/ledger", async (_req, reply) => {
+    try {
+      const ledger = await readLedger();
+      // no-store: nothing in front of the service may show an old ledger
+      return reply.header("cache-control", "no-store").send(ledger);
+    } catch (err) {
+      app.log.error({ msg: err instanceof Error ? err.message : String(err) }, "ledger: could not read the database");
+      return reply.code(503).send({ error: "temporarily_unavailable" });
     }
   });
 
