@@ -10,6 +10,11 @@ const BODY_LIMIT = 2 * 1024 * 1024;
 
 export interface WebhookDeps {
   apply: (input: ApplyInput) => Promise<{ status: ApplyStatus }>;
+  /**
+   * Called after a new customer message was stored, so the triage worker starts at once instead of at its next look.
+   * It must not be waited for and must not be able to fail the webhook: the message is already safe in the database.
+   */
+  onMessageStored?: () => void;
 }
 
 function single(header: string | string[] | undefined): string | undefined {
@@ -81,6 +86,13 @@ export function webhookRoutes(deps: WebhookDeps) {
         }
 
         const result = await deps.apply({ eventId, raw, text: json.text, event: classified.event });
+        if (result.status === "accepted" && classified.event.kind === "message.received") {
+          try {
+            deps.onMessageStored?.();
+          } catch {
+            /* triage is never a reason to fail a webhook */
+          }
+        }
         return reply.code(200).send({ status: result.status });
       } catch (err) {
         req.log.error({ reason: err instanceof Error ? err.message : String(err) }, "could not store event, asking the sender to retry");

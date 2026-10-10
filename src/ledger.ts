@@ -268,8 +268,10 @@ export async function readLedger(pool: pg.Pool = getPool()): Promise<Ledger> {
        FROM refunds ORDER BY refund_id`,
     );
     const messages = await client.query<LedgerRows["messages"][number]>(
+      // Finished = triaged AND either answered or held. A message whose reply is on its way is not listed yet, so
+      // `auto_reply_sent: false` always means "held" and never "not sent yet".
       `SELECT message_id, category, sentiment, draft_reply, flags, auto_reply_sent
-       FROM messages WHERE triage_status = 'done' ORDER BY message_id`,
+       FROM messages WHERE triage_status = 'done' AND (auto_reply_sent OR held_reason IS NOT NULL) ORDER BY message_id`,
     );
     const deadLetter = await client.query<LedgerRows["deadLetter"][number]>("SELECT event_id, reason, detail FROM dead_letter ORDER BY id");
     const counters = await client.query<{ duplicates: number; unknown: number }>(

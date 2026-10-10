@@ -2,3 +2,6 @@
 
 node_modules/
 dist/
+# triage trial: spend record and results (scripts/triage-trial.ts)
+.trial-spend.json
+scripts/out/

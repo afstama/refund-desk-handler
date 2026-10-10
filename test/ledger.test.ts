@@ -274,18 +274,26 @@ describe("GET /ledger in other situations", () => {
     }
   });
 
-  test("a triaged message appears with the contract fields, a pending one does not", async () => {
+  test("a finished message appears with the contract fields; a pending, failed or still-to-be-answered one does not", async () => {
     await resetDb();
     const message = (id: string, messageId: string) => event(id, "message.received", { message_id: messageId, order_id: null, channel: "email", text: "hello" });
-    await deliver(app, "m1", message("m1", "M-DONE"));
-    await deliver(app, "m2", message("m2", "M-WAIT"));
-    await getPool().query(
-      `UPDATE messages SET triage_status = 'done', category = 'praise', sentiment = 'positive',
-         draft_reply = 'Thank you!', flags = '{injection_suspected}', auto_reply_sent = true WHERE message_id = 'M-DONE'`,
-    );
+    for (const [i, m] of ["M-SENT", "M-HELD", "M-DUE", "M-WAIT", "M-FAILED"].entries()) await deliver(app, `m${i}`, message(`m${i}`, m));
+    const done = (id: string, extra: string) =>
+      getPool().query(
+        `UPDATE messages SET triage_status = 'done', category = 'praise', sentiment = 'positive', draft_reply = 'Thank you!', ${extra} WHERE message_id = $1`,
+        [id],
+      );
+    await done("M-SENT", "auto_reply_sent = true");
+    // held: flagged by the model, so never answered automatically (the database refuses the opposite)
+    await done("M-HELD", "flags = '{injection_suspected}', held_reason = 'injection_suspected'");
+    // triaged and allowed, but the reply has not gone out yet: not listed, so auto_reply_sent false never means "not yet"
+    await done("M-DUE", "held_reason = NULL");
+    await getPool().query("UPDATE messages SET triage_status = 'failed', held_reason = 'triage_failed' WHERE message_id = 'M-FAILED'");
+
     const { ledger } = await getLedger();
     assert.deepEqual(ledger.messages, {
-      "M-DONE": { category: "praise", sentiment: "positive", draft_reply: "Thank you!", flags: ["injection_suspected"], auto_reply_sent: true },
+      "M-HELD": { category: "praise", sentiment: "positive", draft_reply: "Thank you!", flags: ["injection_suspected"], auto_reply_sent: false },
+      "M-SENT": { category: "praise", sentiment: "positive", draft_reply: "Thank you!", flags: [], auto_reply_sent: true },
     });
   });
 
