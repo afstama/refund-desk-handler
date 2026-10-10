@@ -30,20 +30,23 @@ function decide(r: Ref): Omit<Dec, "order_id"> {
   if (cancelledAt !== undefined && cancelledAt.getTime() <= r.at.getTime()) {
     return { decision: "rejected", reason_code: "ORDER_CANCELLED", decided_by: "policy", note: null };
   }
-  if (r.cur !== o.cur) return { decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", note: "currency_mismatch" };
-  if (r.minor > o.total - o.refunded) return { decision: "rejected", reason_code: "EXCEEDS_BALANCE", decided_by: "policy", note: null };
-  if (!(r.cur in PERCENT)) return { decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", note: "unsupported_currency" };
+  const mismatch = r.cur !== o.cur;
+  if (!mismatch && r.minor > o.total - o.refunded) return { decision: "rejected", reason_code: "EXCEEDS_BALANCE", decided_by: "policy", note: null };
+  // A currency problem makes the 20 EUR rule unconfirmable: it fails at its own place in the order, not before it.
+  const problem = mismatch ? "currency_mismatch" : !Object.hasOwn(PERCENT, r.cur) ? "unsupported_currency" : null;
   const d = delivered.get(r.order);
   const isDelivered = d !== undefined && d.getTime() <= r.at.getTime();
   const inWindow = isDelivered && r.at.getTime() - d!.getTime() <= 30 * DAY;
-  const small = eur(r.minor, r.cur) <= 2000;
+  const small = problem === null && eur(r.minor, r.cur) <= 2000;
   const eligible = ELIGIBLE.includes(r.reason);
   if (isDelivered && inWindow && small && eligible) {
     o.refunded += r.minor;
     return { decision: "auto_approved", reason_code: "AUTO_OK", decided_by: "policy", note: null };
   }
-  const code = !isDelivered ? "NOT_DELIVERED" : !inWindow ? "WINDOW_EXPIRED" : !small ? "OVER_THRESHOLD" : "REASON_NOT_ELIGIBLE";
-  return { decision: "queued", reason_code: code, decided_by: "none", note: null };
+  if (!isDelivered) return { decision: "queued", reason_code: "NOT_DELIVERED", decided_by: "none", note: problem };
+  if (!inWindow) return { decision: "queued", reason_code: "WINDOW_EXPIRED", decided_by: "none", note: problem };
+  if (!small) return { decision: "queued", reason_code: "OVER_THRESHOLD", decided_by: "none", note: problem };
+  return { decision: "queued", reason_code: "REASON_NOT_ELIGIBLE", decided_by: "none", note: null };
 }
 
 const secret = getConfig().WEBHOOK_SECRET;

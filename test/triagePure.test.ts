@@ -6,7 +6,7 @@ import { describe, test } from "node:test";
 import Anthropic from "@anthropic-ai/sdk";
 import { ConfigError, loadConfig } from "../src/config.js";
 import { classifyError, createAnthropicModel } from "../src/triage/anthropic.js";
-import { draftProblem, holdReason, NEUTRAL_DRAFT } from "../src/triage/guards.js";
+import { draftProblem, holdReason, NEUTRAL_DRAFT, refundWords } from "../src/triage/guards.js";
 import { createRateLimiter } from "../src/triage/limiter.js";
 import { costMicros, hasPrice, PRICES, usdToMicros } from "../src/triage/pricing.js";
 import { KEEP_EACH_END, MAX_WHOLE_CHARS, prepareText } from "../src/triage/prepare.js";
@@ -14,6 +14,7 @@ import { SYSTEM_PROMPT, userContent } from "../src/triage/prompt.js";
 import { DRAFT_MAX_CHARS, flagsFor, normalizeDraft } from "../src/triage/schema.js";
 import { startTriage } from "../src/triage/start.js";
 import { fakeClock } from "./helpers/fakeTriage.js";
+import { loadDeliveries } from "./helpers/replay.js";
 
 describe("what the model reads (prepareText)", () => {
   test("a message up to the limit is sent whole", () => {
@@ -86,7 +87,13 @@ describe("the draft (normalizeDraft, flagsFor)", () => {
 });
 
 describe("the rules that hold a reply (guards)", () => {
-  const clean = { category: "product_question", flags: [] as string[], truncated: false, draft: "Thanks, our team will check the stock and get back to you." };
+  const clean = {
+    category: "product_question",
+    flags: [] as string[],
+    truncated: false,
+    draft: "Thanks, our team will check the stock and get back to you.",
+    text: "When will the night cream be back in stock?",
+  };
 
   test("a normal message may be answered", () => {
     assert.equal(holdReason(clean), null);
@@ -95,6 +102,77 @@ describe("the rules that hold a reply (guards)", () => {
 
   test("POLICY.md section 8: a refund_related message is never answered automatically", () => {
     assert.equal(holdReason({ ...clean, category: "refund_related" }), "refund_related");
+  });
+
+  test("a message whose own text has refund words is held like a refund_related one, whatever category the model chose", () => {
+    const texts = [
+      "O-1034 shows delivered but I only got one of the two items. I'd rather get the missing item than money back.", // M-0083
+      "I was charged twice for O-1042. Love the products though!", // M-0072
+      "I want to cancel my subscription and I expect the last charge to be reversed.", // M-0082
+      "Do you ship to Norway, and if customs charges me will you refund the difference?", // M-0071
+      "My sister swears by your toner. Does it work on rosacea? If not I'll probably send mine back.", // M-0068
+      "Thank you for the quick REFUND last month!",
+      "is this non-refundable?",
+      "I will file a chargeback",
+      "I will file a charge-back",
+      "you overcharged me",
+      "please reimburse me",
+      "I expect compensation",
+      "how do I return it?",
+      "I returned the serum last week",
+      "I sent it back on Monday",
+      "I am sending the toner back",
+      "money-back guarantee?",
+    ];
+    for (const text of texts) {
+      assert.notEqual(refundWords(text), null, text);
+      for (const category of ["order_status", "product_question", "complaint", "praise", "other"]) {
+        assert.equal(holdReason({ ...clean, category, text }), "refund_related", `${category}: ${text}`);
+      }
+    }
+  });
+
+  test("an ordinary text is not held by the check on the text", () => {
+    const texts = [
+      "When will the night cream be back in stock?",
+      "Hi, when will order O-1043 ship? I ordered the eye cream five days ago.",
+      "The pump broke after two days.",
+      "The eye cream is good but honestly not €60 good.",
+      "Is the serum safe during pregnancy?",
+      "Please send me the tracking number.",
+      "I am back from holiday and my parcel is still not here.",
+      "Recharge? Discharge? Reversible packaging?",
+      "👍",
+      "",
+    ];
+    for (const text of texts) {
+      assert.equal(refundWords(text), null, text);
+      assert.equal(holdReason({ ...clean, text }), null, text);
+    }
+  });
+
+  test("on the real messages the text alone holds every refund message of the answer key, and one more (M-0068)", async () => {
+    const key = JSON.parse(readFileSync(new URL("./fixtures/triage-answer-key.json", import.meta.url), "utf8")).messages as Record<string, { category: string }>;
+    const texts = new Map<string, string>();
+    for (const d of await loadDeliveries()) {
+      let body: { type?: unknown; payload?: { message_id?: unknown; text?: unknown } } | null;
+      try {
+        body = JSON.parse(d.body);
+      } catch {
+        continue; // evt_0326, the broken JSON
+      }
+      const p = body && typeof body === "object" && body.type === "message.received" ? body.payload : undefined;
+      if (p && typeof p.message_id === "string" && typeof p.text === "string" && !texts.has(p.message_id)) texts.set(p.message_id, p.text);
+    }
+    assert.equal(texts.size, 83);
+    const keyRefund = Object.entries(key).filter(([, k]) => k.category === "refund_related").map(([id]) => id).sort();
+    assert.equal(keyRefund.length, 20);
+    const heldByText = [...texts].filter(([, text]) => refundWords(text) !== null).map(([id]) => id).sort();
+    assert.deepEqual(keyRefund.filter((id) => !heldByText.includes(id)), [], "a refund message of the key is not held by its text");
+    // the price of the wide list on this data: one message the key would let through
+    assert.deepEqual(heldByText.filter((id) => !keyRefund.includes(id)), ["M-0068"]);
+    // so whatever category the model gives any of them, none of the 20 can be answered automatically
+    for (const id of keyRefund) assert.equal(holdReason({ ...clean, category: "order_status", text: texts.get(id)! }), "refund_related", id);
   });
 
   test("a flagged message is never answered, whatever its category", () => {
@@ -144,16 +222,20 @@ describe("the rules that hold a reply (guards)", () => {
 
   test("the neutral line that replaces a failing draft passes the check itself and is one line", () => {
     assert.equal(draftProblem(NEUTRAL_DRAFT), null);
-    assert.equal(holdReason({ category: "other", flags: [], truncated: false, draft: NEUTRAL_DRAFT }), null);
+    assert.equal(holdReason({ category: "other", flags: [], truncated: false, draft: NEUTRAL_DRAFT, text: "hello" }), null);
     assert.equal(normalizeDraft(NEUTRAL_DRAFT), NEUTRAL_DRAFT);
   });
 
-  test("the order of reasons: a flag beats refund_related, which beats cut, which beats the draft", () => {
-    const all = { category: "refund_related", flags: ["injection_suspected"], truncated: true, draft: "Your refund was approved." };
+  test("the order of reasons: a flag beats refund_related (by category or by text), which beats cut, which beats the draft", () => {
+    const all = { category: "refund_related", flags: ["injection_suspected"], truncated: true, draft: "Your refund was approved.", text: "hello" };
     assert.equal(holdReason(all), "injection_suspected");
     assert.equal(holdReason({ ...all, flags: [] }), "refund_related");
     assert.equal(holdReason({ ...all, flags: [], category: "other" }), "cut");
     assert.equal(holdReason({ ...all, flags: [], category: "other", truncated: false }), "draft_check");
+    // the text counts exactly like the category
+    const byText = { ...all, category: "other", text: "I want my money back" };
+    assert.equal(holdReason(byText), "injection_suspected");
+    assert.equal(holdReason({ ...byText, flags: [] }), "refund_related");
   });
 });
 

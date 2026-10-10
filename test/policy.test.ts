@@ -251,6 +251,25 @@ describe("decideRefund: money and currency", () => {
     assert.equal(outcome(refund({ amountMinor: 200_000, currency: "JPY" }), jpy), "rejected/EXCEEDS_BALANCE/policy");
   });
 
+  test("a currency problem keeps the order of POLICY.md section 4: delivery, then window, then the amount rule", () => {
+    const late = at("2026-06-20T10:00:00Z");
+    const eurOnUsd = (r: Partial<RefundInput> = {}) => refund({ amountMinor: 1200, currency: "EUR", ...r });
+    // a refund in another currency than its order
+    assert.equal(outcome(eurOnUsd(), usd({ deliveredAt: null })), "queued/NOT_DELIVERED/none/currency_mismatch");
+    assert.equal(outcome(eurOnUsd({ occurredAt: late }), usd()), "queued/WINDOW_EXPIRED/none/currency_mismatch");
+    assert.equal(outcome(eurOnUsd(), usd()), "queued/OVER_THRESHOLD/none/currency_mismatch");
+    // the amount rule comes before the reason, so an ineligible reason does not hide the currency problem
+    assert.equal(outcome(eurOnUsd({ reason: "changed_mind" }), usd()), "queued/OVER_THRESHOLD/none/currency_mismatch");
+    // a currency without a rate, on an order in the same currency
+    const jpy = (o: Partial<OrderState> = {}) => order({ currency: "JPY", totalMinor: 100_000, ...o });
+    const yen = (r: Partial<RefundInput> = {}) => refund({ amountMinor: 500, currency: "JPY", ...r });
+    assert.equal(outcome(yen(), jpy({ deliveredAt: null })), "queued/NOT_DELIVERED/none/unsupported_currency");
+    assert.equal(outcome(yen({ occurredAt: late }), jpy()), "queued/WINDOW_EXPIRED/none/unsupported_currency");
+    assert.equal(outcome(yen({ reason: "changed_mind" }), jpy()), "queued/OVER_THRESHOLD/none/unsupported_currency");
+    // a mismatch is never approved automatically, however small and however eligible
+    assert.equal(decideRefund(refund({ amountMinor: 1, currency: "EUR" }), usd()).decision, "queued");
+  });
+
   test("never mutates its inputs", () => {
     const o = order();
     const before = JSON.stringify(o);

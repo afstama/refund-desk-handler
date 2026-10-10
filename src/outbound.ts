@@ -55,8 +55,9 @@ export function outboundRoutes() {
             truncated: boolean;
             draft_reply: string | null;
             auto_reply_sent: boolean;
+            text: string;
           }>(
-            `SELECT triage_status, held_reason, category, flags, truncated, draft_reply, auto_reply_sent
+            `SELECT triage_status, held_reason, category, flags, truncated, draft_reply, auto_reply_sent, text
              FROM messages WHERE message_id = $1 FOR UPDATE`,
             [messageId],
           );
@@ -66,7 +67,8 @@ export function outboundRoutes() {
           if (m.triage_status !== "done") return { code: 409, body: { error: "not_triaged" } };
 
           // the stored reason AND the rules again: if either says hold, nothing is recorded
-          const reason = m.held_reason ?? holdReason({ category: m.category, flags: m.flags, truncated: m.truncated, draft: m.draft_reply });
+          const reason =
+            m.held_reason ?? holdReason({ category: m.category, flags: m.flags, truncated: m.truncated, draft: m.draft_reply, text: m.text });
           if (reason !== null) return { code: 409, body: { error: "held", reason } };
           if (text !== m.draft_reply) return { code: 409, body: { error: "text_mismatch" } };
 

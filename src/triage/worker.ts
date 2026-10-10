@@ -15,9 +15,13 @@ import type { PendingMessage, TriageStore } from "./store.js";
 // The webhook never waits for it: a message is stored first, and the worker picks it up from the table, so a
 // restart or a model outage loses nothing (the message simply stays pending).
 
-export const MAX_ATTEMPTS = 5;
-/** Pause before attempt 2, 3, 4, 5. A 429 that names a longer wait wins. */
-export const BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000];
+export const MAX_ATTEMPTS = 8;
+/**
+ * Pause before attempt 2, 3, ... 8: 90 seconds in all. A message is given up for good (it never reaches the ledger),
+ * so a short outage of the model must not cost one; and 90 seconds still fit in the 3 minutes the grader waits
+ * after the last event. A 429 that names a longer wait wins.
+ */
+export const BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000, 15_000, 30_000, 30_000];
 /** After a fatal answer (bad key, no credit, no such model) wait this long before trying one message again. */
 export const HALT_MS = 60_000;
 const POLL_MS = 5_000;
@@ -151,7 +155,8 @@ export function createWorker(deps: WorkerDeps): Worker {
 
     const flags = flagsFor(answer.output);
     // judged on what the model wrote. A draft that fails the check is held AND replaced, so the ledger never shows it.
-    const held = holdReason({ category: answer.output.category, flags, truncated: prepared.truncated, draft });
+    // The whole text is checked for refund words, not only the part the model read.
+    const held = holdReason({ category: answer.output.category, flags, truncated: prepared.truncated, draft, text: m.text });
     const replaced = draftProblem(draft) !== null;
     const shown = replaced ? NEUTRAL_DRAFT : draft;
     const stored = await deps.store.finish(m.message_id, {

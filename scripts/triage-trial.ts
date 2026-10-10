@@ -15,6 +15,7 @@ import { getConfig } from "../src/config.js";
 import { bodyIdProblem, classify } from "../src/events.js";
 import { signatureMatches } from "../src/signature.js";
 import { createAnthropicModel } from "../src/triage/anthropic.js";
+import { refundWords } from "../src/triage/guards.js";
 import { createRateLimiter } from "../src/triage/limiter.js";
 import { ModelError, type TriageModel } from "../src/triage/model.js";
 import { costMicros, hasPrice, microsToUsd, PRICES, usdToMicros } from "../src/triage/pricing.js";
@@ -212,7 +213,6 @@ async function main() {
   console.log("\n");
 
   // ---- the report ----
-  const REFUND_WORDS = /refund|money back|reimburs|chargeback|charged|charge\b|return|send (?:it|mine) back|compensat/i;
   const lines: string[] = [];
   const rowsOut = messages.map((m) => {
     const s = store.messages.get(m.id)!;
@@ -235,7 +235,8 @@ async function main() {
       key_category: k?.category ?? null,
       key_sentiment: k?.sentiment ?? null,
       key_injection: k?.injection ?? null,
-      refund_words: REFUND_WORDS.test(m.text),
+      // the same check the service uses to hold a reply (src/triage/guards.ts)
+      refund_words: refundWords(m.text) !== null,
     };
   });
 
@@ -286,7 +287,7 @@ async function main() {
     ...wouldSend.map((r) => `   ${r.id} model: ${r.category} (key: ${r.key_category}), draft: ${r.draft}   text: ${r.text}`),
     `-- held although the key says it may be answered: ${overHeld.length}`,
     ...overHeld.map((r) => `   ${r.id} model: ${r.category}, held: ${r.held}   text: ${r.text}`),
-    `-- the text has refund-like words and the model did not say refund_related (Ana decides whether a check on the text is wanted): ${wordsNotRefund.length}`,
+    `-- held by the check on the text, although the model did not say refund_related: ${wordsNotRefund.length}`,
     ...wordsNotRefund.map((r) => `   ${r.id} model: ${r.category}, held: ${r.held ?? "NO (would be sent)"}, text: ${r.text}`),
     `-- drafts replaced by the neutral line because they mention a refund, an approval or money: ${rowsOut.filter((r) => r.original_draft !== null).length}`,
     ...rowsOut.filter((r) => r.original_draft !== null).map((r) => `   ${r.id} (held: ${r.held}): the model wrote: ${r.original_draft}`),

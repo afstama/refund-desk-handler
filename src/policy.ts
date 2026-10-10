@@ -112,9 +112,12 @@ const forHuman = (reasonCode: ReasonCode, note: string | null = null): PolicyDec
  * then the first failing rule for a human.
  *
  * Decisions that go beyond the text of POLICY.md, all agreed with Ana (HANDOFF.md):
- * - A refund in another currency than its order, or in a currency without a rate, goes to a human. The code
- *   OVER_THRESHOLD plus a note is provisional until Marko answers. The balance cannot be compared across
- *   currencies, so that check is skipped for a mismatch. A cancelled order is still rejected.
+ * - A refund in another currency than its order, or in a currency without a rate, goes to a human: for it the
+ *   20 EUR rule cannot be confirmed, so that rule counts as failing. The rules before it keep their place in the
+ *   order of POLICY.md section 4: such a refund on an undelivered order is NOT_DELIVERED, outside the window it is
+ *   WINDOW_EXPIRED, and only otherwise OVER_THRESHOLD (provisional until Marko answers). The note names the
+ *   currency problem in every one of these cases. The balance cannot be compared across currencies, so that check
+ *   is skipped for a mismatch. A cancelled order is still rejected.
  * - "Delivered" means delivered at or before the refund's own timestamp. "Cancelled" is the same: an order counts
  *   as cancelled for a refund only if it was cancelled at or before the refund's own timestamp. So one history of
  *   events gives one decision, whether order.created arrived on time or last (a parked refund is decided later,
@@ -127,22 +130,21 @@ export function decideRefund(refund: RefundInput, order: OrderState | null): Pol
   if (cancelled) return decided("rejected", "ORDER_CANCELLED");
 
   const sameCurrency = refund.currency === order.currency;
-  if (!sameCurrency) return forHuman("OVER_THRESHOLD", "currency_mismatch");
-
-  if (refund.amountMinor > order.totalMinor - order.refundedMinor) return decided("rejected", "EXCEEDS_BALANCE");
+  if (sameCurrency && refund.amountMinor > order.totalMinor - order.refundedMinor) return decided("rejected", "EXCEEDS_BALANCE");
 
   const eurMinor = toEurMinor(refund.amountMinor, refund.currency);
-  if (eurMinor === null) return forHuman("OVER_THRESHOLD", "unsupported_currency");
+  const currencyNote = !sameCurrency ? "currency_mismatch" : eurMinor === null ? "unsupported_currency" : null;
 
   const delivered = order.deliveredAt !== null && order.deliveredAt.getTime() <= refund.occurredAt.getTime();
   const withinWindow = delivered && refund.occurredAt.getTime() - order.deliveredAt!.getTime() <= WINDOW_MS;
-  const underThreshold = eurMinor <= AUTO_LIMIT_MINOR;
+  // With a currency problem the amount cannot be confirmed to be within the limit, so this rule fails.
+  const underThreshold = currencyNote === null && eurMinor !== null && eurMinor <= AUTO_LIMIT_MINOR;
   const eligibleReason = ELIGIBLE_SET.has(refund.reason);
 
   if (delivered && withinWindow && underThreshold && eligibleReason) return decided("auto_approved", "AUTO_OK");
 
-  if (!delivered) return forHuman("NOT_DELIVERED");
-  if (!withinWindow) return forHuman("WINDOW_EXPIRED");
-  if (!underThreshold) return forHuman("OVER_THRESHOLD");
+  if (!delivered) return forHuman("NOT_DELIVERED", currencyNote);
+  if (!withinWindow) return forHuman("WINDOW_EXPIRED", currencyNote);
+  if (!underThreshold) return forHuman("OVER_THRESHOLD", currencyNote);
   return forHuman("REASON_NOT_ELIGIBLE");
 }

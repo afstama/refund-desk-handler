@@ -39,7 +39,8 @@ export function bodyIdProblem(body: unknown, headerId: string): string | null {
 // Only whitespace and letter case are normalised (Marko). Ids keep their case.
 const trimmed = z.string().transform((s) => s.trim());
 const idText = trimmed.pipe(z.string().min(1).max(100));
-const currency = trimmed.pipe(z.string().regex(/^[A-Z]{3}$/));
+// Three ASCII letters in either case, stored in capitals: "eur" can only mean EUR.
+const currency = trimmed.pipe(z.string().regex(/^[A-Za-z]{3}$/)).transform((s) => s.toUpperCase());
 // An amount is read with the decimals of the currency written next to it (JPY 0, EUR 2, KWD 3), so the field is
 // kept as it came and checked together with the currency, at the level of the whole payload.
 const amountOf = (value: unknown, currency: string) => parseAmountMinor(value, minorUnitDigits(currency));

@@ -132,7 +132,8 @@ describe("from a webhook to the ledger", () => {
     assert.equal(l.refunds["R-9000"]!.decision, "queued");
     assert.equal(l.orders["O-9000"]!.refunded_minor, 0);
     const stored = (await rows("SELECT held_reason, draft_reply, original_draft FROM messages"))[0];
-    assert.equal(stored.held_reason, "draft_check");
+    // held twice over: its own text speaks of a refund (the check on the text), and so does the draft (replaced below)
+    assert.equal(stored.held_reason, "refund_related");
     // the public ledger shows the neutral line; the promise the model wrote is kept in the database only
     assert.equal(l.messages["M-0013"]!.draft_reply, NEUTRAL_DRAFT);
     assert.equal(stored.original_draft, "Your refund has been approved.");
@@ -153,6 +154,28 @@ describe("from a webhook to the ledger", () => {
       assert.equal(m.auto_reply_sent, false);
     }
     assert.equal((await rows("SELECT count(*)::int AS n FROM outbound_log"))[0].n, 0);
+    // these texts say nothing about money: it is the draft check alone that holds them
+    assert.deepEqual((await rows("SELECT DISTINCT held_reason FROM messages")).map((r) => r.held_reason), ["draft_check"]);
+  });
+
+  test("M-0083 in the third live trial: the model says order_status, the text says money back, so the reply is held", async () => {
+    await receive("M-0083", "O-1034 shows delivered but I only got one of the two items. I'd rather get the missing item than money back.");
+    await receive("M-0001", "O-1035 shows delivered but I only got one of the two items.");
+    const model = scriptedModel({}, ok({ category: "order_status", sentiment: "negative", draft_reply: "Sorry to hear one item is missing. Our team will look into this and get back to you." }));
+    await worker(model.model).kick();
+
+    const l = await ledger();
+    // the ledger keeps the model's category and gets no new field: only the reply is held
+    assert.deepEqual(l.messages["M-0083"], {
+      category: "order_status",
+      sentiment: "negative",
+      draft_reply: "Sorry to hear one item is missing. Our team will look into this and get back to you.",
+      flags: [],
+      auto_reply_sent: false,
+    });
+    assert.equal(l.messages["M-0001"]!.auto_reply_sent, true);
+    assert.deepEqual(await rows("SELECT message_id FROM outbound_log"), [{ message_id: "M-0001" }]);
+    assert.equal((await rows("SELECT held_reason FROM messages WHERE message_id = 'M-0083'"))[0].held_reason, "refund_related");
   });
 
   test("the claim of M-0014 (a flagged message with a harmless draft) is held and flagged in the ledger", async () => {

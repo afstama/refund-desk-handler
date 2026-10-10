@@ -23,9 +23,11 @@ after(async () => {
 
 let n = 0;
 /** Stores a message through the real webhook, then writes a triage result into its row. */
-async function message(opts: { category?: string; flags?: string[]; truncated?: boolean; held?: string | null; draft?: string; status?: "pending" | "done" } = {}) {
+async function message(
+  opts: { category?: string; flags?: string[]; truncated?: boolean; held?: string | null; draft?: string; status?: "pending" | "done"; text?: string } = {},
+) {
   const id = `M-${String(++n).padStart(4, "0")}`;
-  const res = await deliver(app, `evt_msg_${id}`, event(`evt_msg_${id}`, "message.received", { message_id: id, order_id: null, channel: "email", text: "hello" }));
+  const res = await deliver(app, `evt_msg_${id}`, event(`evt_msg_${id}`, "message.received", { message_id: id, order_id: null, channel: "email", text: opts.text ?? "hello" }));
   assert.equal(res.json.status, "accepted");
   if ((opts.status ?? "done") === "done") {
     await getPool().query(
@@ -122,11 +124,14 @@ describe("what /outbound refuses even with a valid signature", () => {
     const flagged = await message({ category: "praise", flags: ["injection_suspected"], held: null });
     const cut = await message({ truncated: true, held: null });
     const promising = await message({ draft: "Your refund has been approved.", held: null });
+    // the model gave another category, but the customer's own text speaks of money back (M-0083)
+    const refundText = await message({ category: "order_status", held: null, text: "I only got one of the two items. I'd rather get the missing item than money back." });
     for (const [id, reason] of [
       [refundRelated, "refund_related"],
       [flagged, "injection_suspected"],
       [cut, "cut"],
       [promising, "draft_check"],
+      [refundText, "refund_related"],
     ] as const) {
       const draft = (await getPool().query("SELECT draft_reply FROM messages WHERE message_id = $1", [id])).rows[0].draft_reply as string;
       const r = await post({ message_id: id, text: draft });

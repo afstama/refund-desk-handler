@@ -60,8 +60,20 @@ describe("classify: usable events", () => {
     assert.equal(total(order("EUR", "29.97")), 2997);
   });
 
-  test("a currency that is not three capital letters is refused before its amount is read", () => {
-    const d = detail(refund({ ...goodRefund, currency: "eur", amount: "5.00" }));
+  test("a currency in lower or mixed case is the same currency: it is stored in capitals (Marko: letter case)", () => {
+    for (const written of ["eur", "Eur", " eur ", "EUR"]) {
+      const r = classify(refund({ ...goodRefund, currency: written, amount: "5.00" }));
+      assert.ok(r.ok && r.event.kind === "refund.requested" && r.event.currency === "EUR" && r.event.amountMinor === 500, written);
+    }
+    const o = classify({ id: "e", type: "order.created", occurred_at: at, payload: { order_id: "O-1", customer_email: "a@example.com", total: "65.00", currency: "usd" } });
+    assert.ok(o.ok && o.event.kind === "order.created" && o.event.currency === "USD" && o.event.totalMinor === 6500);
+    // the amount is read with the decimals of the currency as stored: 1500 yen, not 15.00
+    const yen = classify(refund({ ...goodRefund, currency: "jpy", amount: "1500" }));
+    assert.ok(yen.ok && yen.event.kind === "refund.requested" && yen.event.currency === "JPY" && yen.event.amountMinor === 1500);
+  });
+
+  test("a currency that is not three letters is refused before its amount is read", () => {
+    const d = detail(refund({ ...goodRefund, currency: "EU", amount: "5.00" }));
     assert.equal(d, "refund.requested: payload.currency invalid");
   });
 
@@ -138,9 +150,11 @@ describe("classify: events that are refused (detail names the field, never the v
     assert.equal(detail(refund({ ...goodRefund, amount: "0.00" })), "refund.requested: payload.amount invalid");
   });
 
-  test("currency must be three capital letters, ids must not be blank", () => {
-    assert.equal(detail(refund({ ...goodRefund, currency: "eur" })), "refund.requested: payload.currency invalid");
-    assert.equal(detail(refund({ ...goodRefund, currency: "EURO" })), "refund.requested: payload.currency invalid");
+  test("currency must be three ASCII letters, ids must not be blank", () => {
+    // "ßa" would become "SSA" if it were put in capitals before the check; "€" and digits are not letters
+    for (const bad of ["EURO", "EU", "E1R", "€", "ßa", "eu r", "", 978, null]) {
+      assert.match(detail(refund({ ...goodRefund, currency: bad })), /^refund\.requested: payload\.currency (invalid|null)$/, String(bad));
+    }
     assert.equal(detail(refund({ ...goodRefund, order_id: "   " })), "refund.requested: payload.order_id invalid");
   });
 
