@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20.12"
+    "node": ">=20.12 <25"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -14,7 +14,8 @@
     "migrate": "tsx src/migrate.ts",
     "test": "node scripts/run-tests.mjs",
     "replay": "tsx scripts/replay.ts",
-    "reset": "tsx scripts/reset.ts"
+    "reset": "tsx scripts/reset.ts",
+    "check-env": "tsx scripts/check-env.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",

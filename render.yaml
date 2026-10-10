@@ -1,0 +1,36 @@
+# Render Blueprint for the Refund Desk web service. The database is Neon: it is only a connection string here.
+# Secrets are marked sync: false. Render asks for them when the Blueprint is first applied; they are never in this file.
+services:
+  - type: web
+    name: refund-desk
+    runtime: node
+    plan: free
+    # next to the Neon project, which is in Frankfurt
+    region: frankfurt
+    branch: main
+    # --include=dev: the build needs typescript whatever NODE_ENV is while it runs
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    # manual deploys: a late push must not replace a service that works ("off" is quoted: bare off is a YAML boolean)
+    autoDeployTrigger: "off"
+    envVars:
+      # production: the session cookie is Secure and __Host- prefixed, and the test helpers refuse to empty the database
+      - key: NODE_ENV
+        value: production
+      # the model is called only when TRIAGE_LIVE is 1
+      - key: TRIAGE_LIVE
+        value: "1"
+      - key: TRIAGE_MODEL
+        value: claude-haiku-5-5
+      # all-time ceiling of what this service may spend on the model, in US dollars
+      - key: TRIAGE_BUDGET_USD
+        value: "5"
+      - key: DATABASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: APPROVER_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

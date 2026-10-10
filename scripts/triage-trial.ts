@@ -15,6 +15,7 @@ import { getConfig } from "../src/config.js";
 import { bodyIdProblem, classify } from "../src/events.js";
 import { signatureMatches } from "../src/signature.js";
 import { createAnthropicModel } from "../src/triage/anthropic.js";
+import { looksLikeAnthropicKey } from "../src/triage/apiKey.js";
 import { refundWords } from "../src/triage/guards.js";
 import { createRateLimiter } from "../src/triage/limiter.js";
 import { ModelError, type TriageModel } from "../src/triage/model.js";
@@ -153,6 +154,9 @@ async function main() {
   }
 
   if (live) {
+    if (!looksLikeAnthropicKey(getConfig().ANTHROPIC_API_KEY)) {
+      die("ANTHROPIC_API_KEY in .env does not look like an Anthropic key (it should start with sk-ant-). Fix .env; `npm run check-env` shows the shape of each setting and never a value. Nothing was called.");
+    }
     if (spentBefore >= usdToMicros(TOTAL_LIMIT_USD)) die(`the trial runs together already reached ${TOTAL_LIMIT_USD} USD: not starting`);
     const phrase = `yes, spend up to ${RUN_LIMIT_USD} USD on ${modelName}`;
     const ok = await confirm(`This calls the real model. Type exactly: ${phrase}\n> `, phrase);

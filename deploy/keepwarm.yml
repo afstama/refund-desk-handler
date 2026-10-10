@@ -1,0 +1,34 @@
+# Keeps the free Render service awake. A free web service sleeps after 15 minutes without a request and needs about a
+# minute to start again, longer than the sender waits, so an event that arrives at a sleeping service is lost.
+# GET /health also queries the database, so it keeps Neon awake too.
+#
+# This file is NOT active here (it is not under .github/workflows). To use it, put it in the repository that should run
+# it as .github/workflows/keepwarm.yml, and set the repository variable SERVICE_URL (Settings > Secrets and variables >
+# Actions > Variables), for example https://refund-desk-xxxx.onrender.com . Without that variable the job does nothing.
+#
+# Two things to know:
+#  - GitHub runs scheduled workflows on a best-effort basis: a run can be late or skipped. Every 10 minutes leaves 5
+#    minutes of slack before the 15 minute sleep.
+#  - A private repository has 2,000 free Actions minutes a month and every run costs at least a minute, so 144 runs a
+#    day last about two weeks. A public repository's standard runners are free. A small public repository that holds
+#    only this file is the cleanest place for it.
+name: keep warm
+
+on:
+  schedule:
+    # minutes 3, 13, 23 ... of every hour (not the start of the hour, which GitHub warns is the busiest moment)
+    - cron: "3-59/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    if: ${{ vars.SERVICE_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ask the service for /health
+        env:
+          SERVICE_URL: ${{ vars.SERVICE_URL }}
+        run: |
+          curl --fail --silent --show-error --max-time 90 --retry 2 --retry-delay 15 "${SERVICE_URL%/}/health"
+          echo

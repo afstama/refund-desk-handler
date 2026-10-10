@@ -6,6 +6,7 @@ import { describe, test } from "node:test";
 import Anthropic from "@anthropic-ai/sdk";
 import { ConfigError, loadConfig } from "../src/config.js";
 import { classifyError, createAnthropicModel } from "../src/triage/anthropic.js";
+import { looksLikeAnthropicKey } from "../src/triage/apiKey.js";
 import { draftProblem, holdReason, NEUTRAL_DRAFT, refundWords } from "../src/triage/guards.js";
 import { createRateLimiter } from "../src/triage/limiter.js";
 import { costMicros, hasPrice, PRICES, usdToMicros } from "../src/triage/pricing.js";
@@ -494,6 +495,24 @@ describe("settings and the live switch", () => {
     const worker = startTriage(loadConfig(base), log);
     assert.equal(worker, null);
     assert.ok(logs.some((m) => /TRIAGE_LIVE/.test(m)));
+  });
+
+  test("the shape check of the API key: a real-looking key passes, a placeholder or a pasted blank does not", () => {
+    assert.equal(looksLikeAnthropicKey("sk-ant-api03-" + "A".repeat(80)), true);
+    for (const v of ["", "xxx", "k", "sk-ant-", "sk-ant-short", "sk-ant-api03-" + "A".repeat(40) + " ", "sk-live-" + "A".repeat(60), "Bearer sk-ant-" + "A".repeat(60)]) {
+      assert.equal(looksLikeAnthropicKey(v), false, JSON.stringify(v));
+    }
+  });
+
+  test("a live start with a key that does not look like a key says so in the log (and still starts)", () => {
+    const warnings: string[] = [];
+    const log = { info() {}, warn: (_o: object, m: string) => warnings.push(m), error() {} };
+    const worker = startTriage(loadConfig({ ...base, TRIAGE_LIVE: "1" }), log);
+    assert.notEqual(worker, null);
+    assert.ok(warnings.some((m) => /does not look like an Anthropic key/.test(m)));
+    const quiet: string[] = [];
+    startTriage(loadConfig({ ...base, ANTHROPIC_API_KEY: "sk-ant-api03-" + "A".repeat(80), TRIAGE_LIVE: "1" }), { info() {}, warn: (_o, m) => quiet.push(m), error() {} });
+    assert.deepEqual(quiet, []);
   });
 
   test("a model with no price is not started (the guard could not count it)", () => {

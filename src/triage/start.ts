@@ -1,5 +1,6 @@
 import type { Config } from "../config.js";
 import { createAnthropicModel } from "./anthropic.js";
+import { looksLikeAnthropicKey } from "./apiKey.js";
 import { createBudget } from "./budget.js";
 import { createRateLimiter } from "./limiter.js";
 import { hasPrice, microsToUsd, usdToMicros } from "./pricing.js";
@@ -21,6 +22,11 @@ export function startTriage(config: Config, log: Logger): Worker | null {
     // Without a price the spend guard cannot count. The rest of the service keeps working.
     log.error({ model: config.TRIAGE_MODEL }, "triage is off: TRIAGE_MODEL has no price in src/triage/pricing.ts");
     return null;
+  }
+
+  if (!looksLikeAnthropicKey(config.ANTHROPIC_API_KEY)) {
+    // Not fatal (the shape is a guess), but it says in plain words what a stream of 401 refusals would otherwise say.
+    log.warn({}, "ANTHROPIC_API_KEY does not look like an Anthropic key (it should start with sk-ant-): the model calls will probably be refused");
   }
 
   const outboundUrl = config.OUTBOUND_URL ?? `http://127.0.0.1:${config.PORT}/outbound`;
