@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { classify } from "../src/events.js";
+import { bodyIdProblem, classify, EVENT_ID_FORMAT } from "../src/events.js";
+import { loadDeliveries } from "./helpers/replay.js";
 
 const at = "2026-04-14T09:12:44+02:00";
 const refund = (payload: Record<string, unknown>) => ({ id: "evt_x", type: "refund.requested", occurred_at: at, payload });
@@ -131,5 +132,64 @@ describe("classify: events that are refused (detail names the field, never the v
     for (const body of [deep, { type: {}, occurred_at: [] }, Object.create(null), { type: "order.created", occurred_at: at, payload: { order_id: { toString: 1 } } }]) {
       assert.doesNotThrow(() => classify(body));
     }
+  });
+});
+
+describe("EVENT_ID_FORMAT", () => {
+  test("accepts ids that look like real ones", () => {
+    for (const id of ["evt_0001", "evt_0420", "evt_t4a", "a.b:c-d_e", "x".repeat(64)]) assert.equal(EVENT_ID_FORMAT.test(id), true, id);
+  });
+
+  test("refuses text a stranger could use to fill the ledger", () => {
+    const bad = ["", "evt 0001", "<img src=x onerror=alert(1)>", "evt_1;DROP TABLE events", "x".repeat(65), "evt_0001\n", "evt/0001", "evt_é"];
+    for (const id of bad) assert.equal(EVENT_ID_FORMAT.test(id), false, JSON.stringify(id));
+  });
+
+  test("every event id in events.ndjson passes", async () => {
+    const bad = (await loadDeliveries()).filter((d) => !EVENT_ID_FORMAT.test(d.event_id));
+    assert.deepEqual(bad.map((d) => d.event_id), []);
+  });
+});
+
+describe("bodyIdProblem: the signed body must carry the id of the header", () => {
+  test("same id, also with stray spaces", () => {
+    assert.equal(bodyIdProblem({ id: "evt_1" }, "evt_1"), null);
+    assert.equal(bodyIdProblem({ id: " evt_1 " }, "evt_1"), null);
+  });
+
+  test("bodies that are not objects are left to classify (evt_0175, evt_0195)", () => {
+    for (const body of [null, [1, 2, 3], "text", 42]) assert.equal(bodyIdProblem(body, "evt_1"), null);
+  });
+
+  test("a different id names the id the body carries, when it looks like an id", () => {
+    assert.equal(bodyIdProblem({ id: "evt_0114" }, "evt_replay_1"), "body id does not match X-Event-Id (body says evt_0114)");
+    assert.equal(bodyIdProblem({ id: "<script>" }, "evt_1"), "body id does not match X-Event-Id");
+    assert.equal(bodyIdProblem({ id: "" }, "evt_1"), "body id does not match X-Event-Id");
+  });
+
+  test("a body without a usable id is refused", () => {
+    assert.equal(bodyIdProblem({ type: "order.created" }, "evt_1"), "body id missing");
+    assert.equal(bodyIdProblem({ id: null }, "evt_1"), "body id null");
+    assert.equal(bodyIdProblem({ id: 7 }, "evt_1"), "body id invalid");
+  });
+
+  test("in the data the body id equals the header id for every object body", async () => {
+    const deliveries = await loadDeliveries();
+    let checked = 0;
+    const problems: string[] = [];
+    for (const d of deliveries) {
+      let body: unknown;
+      try {
+        body = JSON.parse(d.body);
+      } catch {
+        continue; // evt_0326, broken JSON
+      }
+      if (body === null || typeof body !== "object" || Array.isArray(body)) continue; // evt_0175, evt_0195
+      checked++;
+      const problem = bodyIdProblem(body, d.event_id);
+      if (problem) problems.push(`${d.event_id}: ${problem}`);
+    }
+    assert.deepEqual(problems, []);
+    assert.equal(checked, 418);
   });
 });

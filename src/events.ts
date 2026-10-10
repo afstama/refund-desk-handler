@@ -12,6 +12,27 @@ export type ParsedEvent =
 
 export type Classified = { ok: true; event: ParsedEvent } | { ok: false; detail: string };
 
+/**
+ * What an event id may look like (real ones are evt_0001). Checked on the X-Event-Id header before anything is
+ * stored: dead_letter, and so the public ledger, must never hold text a stranger can choose freely.
+ */
+export const EVENT_ID_FORMAT = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/**
+ * The signature covers the body, not the X-Event-Id header, and we dedupe on the header. The body states its own
+ * id, so it must equal the header. Otherwise a captured signed body could be replayed under fresh header ids.
+ * Returns the reason to refuse, or null. Bodies that are not objects are left to classify().
+ */
+export function bodyIdProblem(body: unknown, headerId: string): string | null {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  const id = (body as Record<string, unknown>).id;
+  if (typeof id !== "string") return `body id ${id === undefined ? "missing" : id === null ? "null" : "invalid"}`;
+  const bodyId = id.trim();
+  if (bodyId === headerId) return null;
+  // Naming the id the body really carries tells a person which event was replayed. Only if it looks like an id.
+  return EVENT_ID_FORMAT.test(bodyId) ? `body id does not match X-Event-Id (body says ${bodyId})` : "body id does not match X-Event-Id";
+}
+
 // Only whitespace and letter case are normalised (Marko). Ids keep their case.
 const trimmed = z.string().transform((s) => s.trim());
 const idText = trimmed.pipe(z.string().min(1).max(100));

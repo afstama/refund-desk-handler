@@ -209,6 +209,45 @@ describe("conflicts, races, outages and bad requests", () => {
     assert.equal(await one("SELECT count(*)::int FROM dead_letter"), 0);
   });
 
+  test("a signed body replayed under another header id is refused and labelled with the real id", async () => {
+    await resetDb();
+    const original = (await loadDeliveries()).find((d) => d.event_id === "evt_0114")!; // the loyalty event, unknown type
+    assert.deepEqual((await deliver(app, "evt_0114", original.body, { signature: original.signature })).json, { status: "unknown_type" });
+    for (const id of ["evt_replay_1", "evt_replay_2"]) {
+      assert.deepEqual((await deliver(app, id, original.body, { signature: original.signature })).json, { status: "dead_lettered" });
+    }
+    assert.equal(await one("SELECT count(*)::int FROM events WHERE outcome = 'unknown_type'"), 1);
+    assert.equal(await one("SELECT count(*)::int FROM events"), 1);
+    const rows = (await getPool().query("SELECT event_id, reason, detail FROM dead_letter ORDER BY event_id")).rows;
+    assert.deepEqual(rows, [
+      { event_id: "evt_replay_1", reason: "invalid_event", detail: "body id does not match X-Event-Id (body says evt_0114)" },
+      { event_id: "evt_replay_2", reason: "invalid_event", detail: "body id does not match X-Event-Id (body says evt_0114)" },
+    ]);
+    // the original, delivered again under its own id, is still an ordinary duplicate
+    assert.deepEqual((await deliver(app, "evt_0114", original.body, { signature: original.signature })).json, { status: "duplicate" });
+  });
+
+  test("a signed body with no id of its own is refused", async () => {
+    await resetDb();
+    const body = JSON.stringify({ type: "order.created", occurred_at: "2026-04-01T10:00:00Z", payload: { order_id: "O-NI", customer_email: "a@b.c", total: "1.00", currency: "EUR" } });
+    assert.deepEqual((await deliver(app, "evt_ni", body)).json, { status: "dead_lettered" });
+    assert.equal(await one("SELECT detail FROM dead_letter WHERE event_id = 'evt_ni'"), "body id missing");
+    assert.equal(await one("SELECT count(*)::int FROM orders"), 0);
+  });
+
+  test("a header id that does not look like an id is answered 400 and never stored", async () => {
+    await resetDb();
+    for (const id of ["<img src=x onerror=alert(1)>", "x".repeat(65), "evt 1", "evt_1;DROP"]) {
+      const signed = await deliver(app, id, orderCreated("evt_h1", "O-H1"));
+      const unsigned = await deliver(app, id, orderCreated("evt_h1", "O-H1"), { signature: null });
+      assert.equal(signed.status, 400, id);
+      assert.equal(unsigned.status, 400, id);
+      assert.equal(signed.json.error, "invalid_event_id");
+    }
+    assert.equal(await one("SELECT count(*)::int FROM dead_letter"), 0);
+    assert.equal(await one("SELECT count(*)::int FROM events"), 0);
+  });
+
   test("no signature, or an empty one: 401 and a bad_signature entry", async () => {
     await resetDb();
     assert.equal((await deliver(app, "evt_t8", orderCreated("evt_t8", "O-T8"), { signature: null })).status, 401);

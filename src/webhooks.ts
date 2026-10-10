@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { type ApplyInput, type ApplyStatus } from "./apply.js";
 import { getConfig } from "./config.js";
 import { recordDeadLetter } from "./deadLetter.js";
-import { classify, type Classified } from "./events.js";
+import { bodyIdProblem, classify, EVENT_ID_FORMAT, type Classified } from "./events.js";
 import { signatureMatches } from "./signature.js";
 
 // The biggest body in events.ndjson is 125 KB. Fastify's default limit is 1 MiB.
@@ -35,7 +35,8 @@ function safeClassify(value: unknown): Classified {
 }
 
 /**
- * POST /webhooks, in this order: signature, JSON, shape, then duplicate check and apply in one transaction.
+ * POST /webhooks, in this order: header id format, signature, JSON, body id equals header id, shape,
+ * then duplicate check and apply in one transaction.
  *   401 bad signature, 400 body is not JSON (both fixed by CONTRACT.md, both listed in dead_letter)
  *   200 everything else: accepted, duplicate, unknown type, or a signed but invalid event (dead_lettered)
  *   503 only when we could not store the event (database down): the sender retries, nothing is lost
@@ -49,7 +50,9 @@ export function webhookRoutes(deps: WebhookDeps) {
 
     scope.post("/webhooks", { bodyLimit: BODY_LIMIT }, async (req, reply) => {
       const eventId = single(req.headers["x-event-id"]);
-      if (!eventId || eventId.length > 128) return reply.code(400).send({ error: "missing_event_id" });
+      if (!eventId) return reply.code(400).send({ error: "missing_event_id" });
+      // Nothing is stored for an id that does not look like an id: anyone can send this header.
+      if (!EVENT_ID_FORMAT.test(eventId)) return reply.code(400).send({ error: "invalid_event_id" });
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
 
       try {
@@ -62,6 +65,13 @@ export function webhookRoutes(deps: WebhookDeps) {
         if (!json.ok) {
           await recordDeadLetter(eventId, "invalid_json", "body is not valid JSON");
           return reply.code(400).send({ error: "invalid_json" });
+        }
+
+        // The signature does not cover the header, so the header id must match the id the signed body carries.
+        const idProblem = bodyIdProblem(json.value, eventId);
+        if (idProblem) {
+          await recordDeadLetter(eventId, "invalid_event", idProblem);
+          return reply.code(200).send({ status: "dead_lettered" });
         }
 
         const classified = safeClassify(json.value);
