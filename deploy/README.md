@@ -10,7 +10,7 @@ Nothing secret is in this repository: the four secrets are typed into Render's d
 | `../render.yaml` | The Render Blueprint: service name, Frankfurt, free plan, build and start commands, `/health` as the health check, manual deploys, the environment variables (secrets marked `sync: false`) |
 | `../.node-version` | The Node version Render uses (24) |
 | `../.env.example` | The settings, without values |
-| `keepwarm.yml` | A GitHub Actions workflow that calls `/health` every 10 minutes (not active here, see the comments in the file) |
+| `../.github/workflows/keepwarm.yml` | A GitHub Actions workflow that calls `/health` every 10 minutes. It does nothing until the repository variable `SERVICE_URL` is set, so it only runs in the repository where Ana sets it (see the comments in the file for the limits of a private repository) |
 
 ## Settings
 

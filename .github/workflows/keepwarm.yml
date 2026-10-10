@@ -2,16 +2,16 @@
 # minute to start again, longer than the sender waits, so an event that arrives at a sleeping service is lost.
 # GET /health also queries the database, so it keeps Neon awake too.
 #
-# This file is NOT active here (it is not under .github/workflows). To use it, put it in the repository that should run
-# it as .github/workflows/keepwarm.yml, and set the repository variable SERVICE_URL (Settings > Secrets and variables >
-# Actions > Variables), for example https://refund-desk-xxxx.onrender.com . Without that variable the job does nothing.
+# It does nothing until the repository variable SERVICE_URL is set (Settings > Secrets and variables > Actions >
+# Variables), for example https://refund-desk-xxxx.onrender.com . Set it only in the repository that should run the
+# ping; where it is not set (the other remote) the job is skipped and costs nothing.
 #
 # Two things to know:
 #  - GitHub runs scheduled workflows on a best-effort basis: a run can be late or skipped. Every 10 minutes leaves 5
-#    minutes of slack before the 15 minute sleep.
+#    minutes of slack before the 15 minute sleep. Scheduled workflows only run on the default branch.
 #  - A private repository has 2,000 free Actions minutes a month and every run costs at least a minute, so 144 runs a
-#    day last about two weeks. A public repository's standard runners are free. A small public repository that holds
-#    only this file is the cleanest place for it.
+#    day last about two weeks, then the pings stop. (A public repository's standard runners are free.) After the
+#    review period, disable the workflow or delete the variable.
 name: keep warm
 
 on:
