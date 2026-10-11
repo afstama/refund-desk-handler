@@ -8,7 +8,7 @@ List each thing you noticed and what you did about it.
 
 - 4 bad signatures, 5 duplicates, 1 unknown event type - these were handled exactly as the POLICY and CONTRACT say.
 - 12 signed but invalid events (```null```, ```"not-a-date```, etc.) - returned 200 with ```{"status": "dead_lettered"}``` and a reason for each
-- Dirty values: ```" 18.40"```, ```11.4```, ```"13,40"``` are accepted, trimmed, and converted. ```" O-1112 "```, and ```"R-0081\n"``` are trimed, and only the refund reason is lowercased.
+- Dirty values: ```" 18.40"``` and ```11.4``` are accepted, trimmed, and converted. ```" O-1112 "```, and ```"R-0081\n"``` are trimed, and only the refund reason is lowercased.
 - The signature is over the raw bytes: bodies come in 3 formats (compact, compact plus a newline, pretty-printed) and one is 125 KB, so the exact bytes are verified and a very long message is cut before the model.
 - Two prompt-injection messages are flagged and never answered.
 
